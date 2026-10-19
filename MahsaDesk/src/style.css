@@ -622,6 +622,35 @@ textarea.lines {
   gap: 12px;
 }
 
+/* --- qr / apps / assets --- */
+.qr-img {
+  width: 320px;
+  max-width: 80vw;
+  background: #fff;
+  border-radius: 8px;
+  align-self: center;
+}
+
+.mono {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.app-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.app-search {
+  width: 100%;
+}
+
+.app-items {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 /* --- about --- */
 .links {
   display: flex;

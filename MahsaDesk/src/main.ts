@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, type ServerProfile, type Subscription, type Settings } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +27,10 @@ function icon(name: string): HTMLElement {
     about: '<circle cx="12" cy="12" r="8.5" fill="none" stroke-width="2.4"/><path d="M12 11v5M12 8v.2" stroke-linecap="round" stroke-width="2.6"/>',
     power: '<path d="M12 3v8M6.5 7a8 8 0 1 0 11 0" fill="none" stroke-width="2.6" stroke-linecap="round"/>',
     plus: '<path d="M12 5v14M5 12h14" stroke-width="2.6" stroke-linecap="round"/>',
+    apps: '<rect x="4" y="4" width="7" height="7" rx="1.5" fill="none" stroke-width="2.2"/><rect x="13" y="4" width="7" height="7" rx="1.5" fill="none" stroke-width="2.2"/><rect x="4" y="13" width="7" height="7" rx="1.5" fill="none" stroke-width="2.2"/><path d="M16.5 15.5h3v3h-3z" fill="none" stroke-width="2.2"/>',
+    qr: '<rect x="4" y="4" width="6" height="6" rx="1" fill="none" stroke-width="2.2"/><rect x="14" y="4" width="6" height="6" rx="1" fill="none" stroke-width="2.2"/><rect x="4" y="14" width="6" height="6" rx="1" fill="none" stroke-width="2.2"/><path d="M14 14h3M17 17h3M14 20h3" stroke-width="2.2" stroke-linecap="round"/>',
+    scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M20 8V5a1 1 0 0 0-1-1h-3M4 16v3a1 1 0 0 0 1 1h3M20 16v3a1 1 0 0 1-1 1h-3M3 12h18" fill="none" stroke-width="2.2" stroke-linecap="round"/>',
+    check: '<path d="M5 13l4 4L19 7" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>',
     refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 3v4h-4" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v6M14 11v6" fill="none" stroke-width="2.2" stroke-linecap="round"/>',
     pencil: '<path d="M4 20l4-1L19 8l-3-3L5 16l-1 4zM13 6l3 3" fill="none" stroke-width="2.2" stroke-linejoin="round"/>',
@@ -72,6 +76,8 @@ const NAV = [
   { id: "servers", icon: "servers", label: "nav.servers" },
   { id: "subs", icon: "subs", label: "nav.subs" },
   { id: "routing", icon: "routing", label: "nav.routing" },
+  { id: "apps", icon: "apps", label: "nav.apps" },
+  { id: "assets", icon: "dl", label: "nav.assets" },
   { id: "settings", icon: "settings", label: "nav.settings" },
   { id: "logs", icon: "logs", label: "nav.logs" },
   { id: "about", icon: "about", label: "nav.about" },
@@ -146,6 +152,8 @@ function renderView() {
     case "servers": renderServers(); break;
     case "subs": renderSubs(); break;
     case "routing": renderRouting(); break;
+    case "apps": renderApps(); break;
+    case "assets": renderAssets(); break;
     case "settings": renderSettings(); break;
     case "logs": renderLogs(); break;
     case "about": renderAbout(); break;
@@ -205,7 +213,33 @@ function renderServers() {
     servers = await api.listServers();
     renderView();
   };
-  actions.append(btnImport, btnPing);
+  const btnReal = el("button", "btn", t("servers.realAll"));
+  btnReal.prepend(icon("globe"));
+  btnReal.onclick = async () => {
+    btnReal.disabled = true;
+    try {
+      await api.testAllReal();
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    btnReal.disabled = false;
+    servers = await api.listServers();
+    renderView();
+  };
+  const btnValidate = el("button", "btn", t("servers.validate"));
+  btnValidate.prepend(icon("check"));
+  btnValidate.onclick = async () => {
+    if (!settings?.active_server) return alert(t("servers.noServers"));
+    btnValidate.disabled = true;
+    try {
+      await api.validateConfig();
+      alert(t("servers.validOk"));
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    btnValidate.disabled = false;
+  };
+  actions.append(btnImport, btnPing, btnReal, btnValidate);
   head.append(actions);
   wrap.append(head);
 
@@ -246,6 +280,31 @@ function renderServers() {
       servers = await api.listServers();
       renderView();
     };
+    const btnReal = el("button", "btn-icon", "");
+    btnReal.title = t("servers.realTest");
+    btnReal.append(icon("globe"));
+    btnReal.onclick = async () => {
+      btnReal.disabled = true;
+      try {
+        await api.runRealTest(p.id);
+        servers = await api.listServers();
+        renderView();
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+        btnReal.disabled = false;
+      }
+    };
+    const btnQr = el("button", "btn-icon", "");
+    btnQr.title = t("servers.qr");
+    btnQr.append(icon("qr"));
+    btnQr.onclick = () => showQr(p);
+    const btnCopy = el("button", "btn-icon", "");
+    btnCopy.title = t("servers.copy");
+    btnCopy.append(icon("copy"));
+    btnCopy.onclick = async () => {
+      const link = await api.shareLink(p.id);
+      await navigator.clipboard.writeText(link);
+    };
     const btnUse = el("button", "btn-icon", "");
     btnUse.title = t("servers.setActive");
     btnUse.append(icon("pin"));
@@ -269,7 +328,7 @@ function renderServers() {
       renderView();
     };
     btnPing.append;
-    right.append(btnPing, btnUse, btnEdit, btnDel);
+    right.append(btnPing, btnReal, btnQr, btnCopy, btnUse, btnEdit, btnDel);
     item.append(info, right);
     item.addEventListener("dblclick", async () => {
       await api.setActive(p.id);
@@ -283,6 +342,58 @@ function renderServers() {
   mainEl.append(wrap);
 }
 
+async function showQr(p: ServerProfile) {
+  const dlg = el("div", "modal-back");
+  const box = el("div", "modal");
+  const title = el("h2", "", t("servers.qr"));
+  const img = el("img", "qr-img") as HTMLImageElement;
+  try {
+    const link = await api.shareLink(p.id);
+    const QR = (await import("qrcode")).default;
+    img.src = await QR.toDataURL(link, { width: 320, margin: 1 });
+    img.alt = link;
+    box.append(title, img, el("div", "srv-meta", link));
+  } catch (e: any) {
+    box.append(title, el("p", "muted", String(e)));
+  }
+  const row = el("div", "modal-actions");
+  const close = el("button", "btn ghost", t("servers.cancel"));
+  close.onclick = () => dlg.remove();
+  row.append(close);
+  box.append(row);
+  dlg.append(box);
+  document.body.append(dlg);
+}
+
+async function scanFromClipboard(): Promise<void> {
+  try {
+    const data = await readQrFromClipboard();
+    if (!data) {
+      alert(t("servers.scanNone"));
+      return;
+    }
+    const n = await api.importLinks(data, "");
+    await api.persist();
+    servers = await api.listServers();
+    renderView();
+    alert(String(n));
+  } catch (e: any) {
+    alert(`${t("error")}: ${e}`);
+  }
+}
+
+async function scanFromScreen(): Promise<void> {
+  try {
+    // Windows screen-clip overlay puts the cropped screenshot into the clipboard
+    // @ts-ignore injected by withGlobalTauri
+    await (await import("@tauri-apps/plugin-opener")).openUrl("ms-screenclip:");
+    await new Promise((r) => setTimeout(r, 3500));
+    await scanFromClipboard();
+  } catch (e: any) {
+    alert(`${t("error")}: ${e}`);
+  }
+}
+
 function importDialog() {
   const dlg = el("div", "modal-back");
   const box = el("div", "modal");
@@ -293,7 +404,21 @@ function importDialog() {
   const ok = el("button", "btn primary", t("servers.importBtn"));
   const cancel = el("button", "btn ghost", t("servers.cancel"));
   row.append(cancel, ok);
-  box.append(title, ta, row);
+  const scanRow = el("div", "modal-actions");
+  const btnClip = el("button", "btn", t("servers.scanClip"));
+  btnClip.prepend(icon("scan"));
+  btnClip.onclick = async () => {
+    dlg.remove();
+    await scanFromClipboard();
+  };
+  const btnScreen = el("button", "btn", t("servers.scanScreen"));
+  btnScreen.prepend(icon("scan"));
+  btnScreen.onclick = async () => {
+    dlg.remove();
+    await scanFromScreen();
+  };
+  scanRow.append(btnClip, btnScreen);
+  box.append(title, ta, scanRow, row);
   dlg.append(box);
   document.body.append(dlg);
   cancel.onclick = () => dlg.remove();
@@ -582,6 +707,139 @@ async function save(patch: Partial<Settings>) {
   if (!settings) return;
   settings = { ...settings, ...patch };
   await api.setSettings(settings);
+}
+
+// ---------------------------------------------------------------------------
+// per-app proxy view (effective in TUN mode)
+// ---------------------------------------------------------------------------
+
+let procList: string[] | null = null;
+
+function renderApps() {
+  const wrap = el("div", "view");
+  const head = el("div", "view-head");
+  head.append(el("h1", "", t("apps.title")));
+  wrap.append(head);
+  if (!settings) return;
+  const note = el("p", "muted", t("apps.note"));
+  wrap.append(note);
+
+  const modeCard = el("div", "card");
+  modeCard.append(el("h2", "", t("apps.mode")));
+  const f = el("div", "field");
+  const sel = el("select") as HTMLSelectElement;
+  for (const [k, v] of [
+    ["off", t("apps.off")],
+    ["bypass", t("apps.bypass")],
+    ["allow", t("apps.allow")],
+  ] as [string, string][]) {
+    const o = el("option", "", v) as HTMLOptionElement;
+    o.value = k;
+    sel.append(o);
+  }
+  sel.value = settings.per_app_mode || "off";
+  sel.onchange = () => save({ per_app_mode: sel.value });
+  f.append(sel);
+  modeCard.append(f);
+  wrap.append(modeCard);
+
+  const listCard = el("div", "card");
+  listCard.append(el("h2", "", t("apps.list")));
+  const listWrap = el("div", "app-list");
+  listWrap.append(el("p", "muted", t("apps.loading")));
+  listCard.append(listWrap);
+  wrap.append(listCard);
+  mainEl.append(wrap);
+
+  api.listProcesses().then((procs) => {
+    procList = procs;
+    listWrap.innerHTML = "";
+    const chosen = new Set(
+      (settings?.per_app_list || "")
+        .split(/\r?\n/)
+        .map((l: string) => l.trim())
+        .filter(Boolean)
+    );
+    const search = el("input") as HTMLInputElement;
+    search.placeholder = t("apps.search");
+    search.className = "app-search";
+    const listEl = el("div", "app-items");
+    const renderItems = () => {
+      listEl.innerHTML = "";
+      const q = (search.value || "").toLowerCase();
+      for (const pname of procs) {
+        if (q && !pname.toLowerCase().includes(q)) continue;
+        const row = el("div", "switch-row");
+        row.append(el("span", "mono", pname));
+        const sw = el("button", `switch ${chosen.has(pname) ? "on" : ""}`);
+        sw.onclick = async () => {
+          if (chosen.has(pname)) chosen.delete(pname);
+          else chosen.add(pname);
+          sw.className = `switch ${chosen.has(pname) ? "on" : ""}`;
+          await save({ per_app_list: [...chosen].sort().join("\n") });
+        };
+        row.append(sw);
+        listEl.append(row);
+      }
+    };
+    search.addEventListener("input", renderItems);
+    renderItems();
+    listWrap.innerHTML = "";
+    listWrap.append(search, listEl);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// geo assets view
+// ---------------------------------------------------------------------------
+
+function renderAssets() {
+  const wrap = el("div", "view");
+  const head = el("div", "view-head");
+  head.append(el("h1", "", t("assets.title")));
+  wrap.append(head);
+  wrap.append(el("p", "muted", t("assets.note")));
+
+  const card = el("div", "card");
+  api.assetsInfo().then((info) => {
+    for (const a of info) {
+      const row = el("div", "switch-row");
+      const label = el("span", "mono", a.name);
+      row.append(label);
+      const right = el("div", "srv-actions");
+      right.append(
+        el("span", "badge", a.exists ? fmtBytes(a.size) : t("assets.missing"))
+      );
+      const btnDel = el("button", "btn-icon danger");
+      btnDel.append(icon("trash"));
+      btnDel.title = t("servers.delete");
+      btnDel.disabled = !a.exists;
+      btnDel.onclick = async () => {
+        await api.deleteGeo(a.name);
+        renderView();
+      };
+      right.append(btnDel);
+      row.append(right);
+      card.append(row);
+    }
+    wrap.append(card);
+    const actions = el("div", "actions");
+    const btnDl = el("button", "btn primary", t("routing.geoDownload"));
+    btnDl.prepend(icon("dl"));
+    btnDl.onclick = async () => {
+      btnDl.disabled = true;
+      btnDl.textContent = "...";
+      try {
+        await api.downloadGeo();
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+      }
+      renderView();
+    };
+    actions.append(btnDl);
+    wrap.append(actions);
+  });
+  mainEl.append(wrap);
 }
 
 // ---------------------------------------------------------------------------

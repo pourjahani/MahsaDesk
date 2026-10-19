@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder};
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 use servers::ServerProfile;
 use settings::Settings;
@@ -103,6 +103,12 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
         .find(|(id, _)| *id == settings.active_server)
         .ok_or_else(|| "no active server selected".to_string())?;
 
+    if server.protocol == "hysteria2" && mode == Mode::SystemProxy {
+        return Err(
+            "hysteria2 profiles need TUN mode (sing-box handles them natively)".into(),
+        );
+    }
+
     // stop anything running first
     let _ = disconnect(app);
 
@@ -139,8 +145,23 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
                 let _ = disconnect(app);
                 return Err("sing-box binary not found (TUN mode unavailable)".into());
             }
-            let _ = &handle; // xray keeps running under the TUN
-            if let Err(e) = tun::start_tun_elevated(&singbox, &dir, settings.socks_port) {
+            let cfg = if server.protocol == "hysteria2" {
+                // native sing-box outbound; keep the throwaway xray off
+                let _ = handle;
+                tun::build_singbox_config_native(
+                    &server,
+                    &settings.per_app_mode,
+                    &settings.per_app_list,
+                )
+            } else {
+                let _ = &handle; // xray keeps running under the TUN
+                tun::build_singbox_config(
+                    settings.socks_port,
+                    &settings.per_app_mode,
+                    &settings.per_app_list,
+                )
+            };
+            if let Err(e) = tun::start_tun_elevated(&cfg, &singbox, &dir) {
                 let _ = disconnect(app);
                 return Err(e);
             }
@@ -636,6 +657,171 @@ fn base64_decode(text: String) -> Result<String, String> {
     String::from_utf8(b).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Extra desktop tools (scan / share / test / assets / per-app)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn share_link(st: State<ManagedState>, id: String) -> Result<String, String> {
+    let arc = state(&st);
+    let g = arc.lock().unwrap();
+    let p = g
+        .servers
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or("server not found")?;
+    Ok(servers::build_link(p))
+}
+
+fn locate_xray(app: &AppHandle) -> Result<PathBuf, String> {
+    let bin_dir = app
+        .path()
+        .resolve("binaries", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| e.to_string())?;
+    let p = bin_dir.join("xray.exe");
+    if p.exists() {
+        Ok(p)
+    } else {
+        Err("xray core binary not found".into())
+    }
+}
+
+#[tauri::command]
+fn run_real_test(app: AppHandle, st: State<ManagedState>, id: String) -> Result<Option<u32>, String> {
+    let xray = locate_xray(&app)?;
+    let arc = state(&st);
+    let (settings, server) = {
+        let g = arc.lock().unwrap();
+        let p = g
+            .servers
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or("server not found")?;
+        (g.settings.clone(), p)
+    };
+    if server.protocol == "hysteria2" {
+        return Err("hysteria2 real-test runs in the TUN engine; use TCP ping for it".into());
+    }
+    let delay = core::real_url_test(&xray, &settings, &server, 0).ok();
+    let mut g = arc.lock().unwrap();
+    for p in g.servers.iter_mut() {
+        if p.id == id {
+            p.delay = delay;
+        }
+    }
+    Ok(delay)
+}
+
+#[tauri::command]
+fn test_all_real(app: AppHandle, st: State<ManagedState>) -> Vec<DelayResult> {
+    let xray = match locate_xray(&app) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let arc = state(&st);
+    let (settings, targets) = {
+        let g = arc.lock().unwrap();
+        (
+            g.settings.clone(),
+            g.servers
+                .iter()
+                .filter(|p| p.protocol != "hysteria2")
+                .map(|p| (p.id.clone(), p.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    // batches of 8 concurrent throwaway cores
+    let mut results = Vec::new();
+    for chunk in targets.chunks(8) {
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for (i, (id, server)) in chunk.iter().enumerate() {
+                let x = xray.clone();
+                let st2 = settings.clone();
+                let (id, server) = (id.clone(), clone_profile(server));
+                handles.push(s.spawn(move || {
+                    let delay = core::real_url_test(&x, &st2, &server, i).ok();
+                    (id, delay)
+                }));
+            }
+            for h in handles {
+                if let Ok((id, delay)) = h.join() {
+                    results.push(DelayResult { id, delay });
+                }
+            }
+        });
+    }
+    let mut g = arc.lock().unwrap();
+    for r in &results {
+        for p in g.servers.iter_mut() {
+            if p.id == r.id {
+                p.delay = r.delay;
+            }
+        }
+    }
+    results
+}
+
+#[tauri::command]
+fn validate_servers_config(app: AppHandle, st: State<ManagedState>) -> Result<(), String> {
+    let xray = locate_xray(&app)?;
+    let arc = state(&st);
+    let (settings, server) = {
+        let g = arc.lock().unwrap();
+        let p = g
+            .servers
+            .iter()
+            .find(|p| p.id == g.settings.active_server)
+            .cloned()
+            .ok_or_else(|| "no active server selected".to_string())?;
+        (g.settings.clone(), p)
+    };
+    let cfg = config_gen::build_config(&settings, &server);
+    core::validate_config(&xray, &cfg, 0)
+}
+
+#[tauri::command]
+fn list_running_processes() -> Vec<String> {
+    core::list_processes()
+}
+
+#[derive(Serialize)]
+struct AssetInfo {
+    name: String,
+    exists: bool,
+    size: u64,
+}
+
+#[tauri::command]
+fn assets_info(app: AppHandle) -> Vec<AssetInfo> {
+    let mut out = Vec::new();
+    if let Ok(dir) = app.path().app_config_dir() {
+        for f in ["geoip.dat", "geosite.dat"] {
+            let p = dir.join(f);
+            out.push(AssetInfo {
+                name: f.into(),
+                exists: p.exists(),
+                size: std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+            });
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn delete_geo(app: AppHandle, name: String) -> Result<(), String> {
+    if name != "geoip.dat" && name != "geosite.dat" {
+        return Err("bad asset name".into());
+    }
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let p = dir.join(&name);
+    if p.exists() {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn chrono_secs() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -721,6 +907,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             let dir = app
                 .path()
@@ -804,7 +992,14 @@ pub fn run() {
             geo_files_exist,
             app_version,
             base64_encode,
-            base64_decode
+            base64_decode,
+            share_link,
+            run_real_test,
+            test_all_real,
+            validate_servers_config,
+            list_running_processes,
+            assets_info,
+            delete_geo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

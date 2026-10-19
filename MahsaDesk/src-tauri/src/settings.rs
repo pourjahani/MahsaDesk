@@ -31,6 +31,8 @@ pub struct Settings {
     pub cdn_ip: String,          // e.g. "104.18.0.25"
     pub domain_strategy: String, // IPIfNonMatch
     pub proxy_sharing: bool,     // listen on 0.0.0.0 instead of 127.0.0.1
+    pub per_app_mode: String,    // "off" | "bypass" | "allow" (TUN only)
+    pub per_app_list: String,    // newline separated process names
 }
 
 impl Default for Settings {
@@ -61,6 +63,8 @@ impl Default for Settings {
             cdn_ip: String::new(),
             domain_strategy: "IPIfNonMatch".into(),
             proxy_sharing: false,
+            per_app_mode: "off".into(),
+            per_app_list: String::new(),
         }
     }
 }

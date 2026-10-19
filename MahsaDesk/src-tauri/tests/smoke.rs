@@ -2,6 +2,37 @@ use base64::Engine;
 use mahsadesk::{config_gen, servers};
 use serde_json::Value;
 
+#[test]
+fn parses_hysteria2_link() {
+    let link = "hy2://secretpass@h.example.com:8443?sni=h.example.com&obfs=salamander&obfs-password=obfsbw&insecure=1#Hy2Node";
+    let p = servers::parse_link(link).expect("hy2 must parse");
+    assert_eq!(p.protocol, "hysteria2");
+    assert_eq!(p.address, "h.example.com");
+    assert_eq!(p.port, 8443);
+    assert_eq!(p.auth, "secretpass");
+    assert_eq!(p.method, "salamander");
+    assert_eq!(p.encryption, "obfsbw");
+    assert_eq!(p.security, "tls");
+}
+
+#[test]
+fn build_link_roundtrip() {
+    for link in [
+        "vless://b831381d-6324-4d53-ad4f-8cda48b30811@real.example.com:443?encryption=none&security=reality&sni=www.example.org&fp=chrome&pbk=PUBKEY123&sid=ab01&flow=xtls-rprx-vision&type=tcp#Reality-Node",
+        "trojan://pass123@t.example.com:443?sni=t.example.com&type=ws&path=%2Ftrojan#T",
+        "hysteria2://secretpass@h.example.com:8443?sni=h.example.com&obfs=salamander&obfs-password=obfsbw&insecure=1#Hy2Node",
+        "vmess://eyJ2IjoiMiIsInBzIjoiU21va2UiLCJhZGQiOiJhY2Nlc3MuaG91c2Uuby5uZXQud29ya2VyLmRldiIsInBvcnQiOiI0NDMiLCJpZCI6Ijg3YjhmNGFiLWZlYmMtNGY1Ny04ZmY0LWQxYjdmNjM1NzBhYiIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsImhvc3QiOiJhY2Nlc3MuaG91c2Uuby5uZXQud29ya2VyLmRldiIsInBhdGgiOiIvdmFjdCNkLyIsInRscyI6InRscyJ9",
+    ] {
+        let p = servers::parse_link(link).expect("must parse");
+        let rebuilt = servers::build_link(&p);
+        let p2 = servers::parse_link(&rebuilt).expect("rebuilt link must parse");
+        assert_eq!(p.protocol, p2.protocol);
+        assert_eq!(p.address, p2.address);
+        assert_eq!(p.port, p2.port);
+        assert_eq!(p.auth, p2.auth);
+    }
+}
+
 fn default_settings() -> mahsadesk::settings::Settings {
     mahsadesk::settings::Settings::default()
 }

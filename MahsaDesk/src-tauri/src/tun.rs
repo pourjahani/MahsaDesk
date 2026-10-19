@@ -1,11 +1,33 @@
+use crate::servers::ServerProfile;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Command;
 
+fn per_app_rules(mode: &str, list: &str) -> Vec<Value> {
+    let names: Vec<String> = list
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim_end_matches(".exe").to_string())
+        .collect();
+    if names.is_empty() || mode == "off" {
+        return Vec::new();
+    }
+    let outbound = if mode == "bypass" { "direct-out" } else { "socks-out" };
+    vec![json!({
+        "process_name": names,
+        "outbound": outbound,
+        "inbound": ["tun-in"]
+    })]
+}
+
 /// Generate a sing-box TUN config that forwards all traffic into the local
 /// Xray SOCKS inbound, so TUN mode automatically works with whatever server
 /// profile the Xray config uses. Scaffolded & experimental.
-pub fn build_singbox_config(socks_port: u16) -> Value {
+pub fn build_singbox_config(socks_port: u16, per_app_mode: &str, per_app_list: &str) -> Value {
+    let mut rules = per_app_rules(per_app_mode, per_app_list);
+    rules.push(json!({"protocol": "dns", "outbound": "dns-out"}));
+    rules.push(json!({"ip_is_private": true, "outbound": "direct-out"}));
     json!({
         "log": {"level": "info"},
         "dns": {
@@ -30,10 +52,58 @@ pub fn build_singbox_config(socks_port: u16) -> Value {
             {"type": "dns", "tag": "dns-out"}
         ],
         "route": {
-            "rules": [
-                {"protocol": "dns", "outbound": "dns-out"},
-                {"ip_is_private": true, "outbound": "direct-out"}
-            ],
+            "rules": rules,
+            "final": "socks-out",
+            "auto_detect_interface": true
+        }
+    })
+}
+
+/// Full TUN config for a hysteria2 profile: sing-box handles the tunnel itself.
+pub fn build_singbox_config_native(server: &ServerProfile, per_app_mode: &str, per_app_list: &str) -> Value {
+    let mut rules = per_app_rules(per_app_mode, per_app_list);
+    rules.push(json!({"protocol": "dns", "outbound": "dns-out"}));
+    rules.push(json!({"ip_is_private": true, "outbound": "direct-out"}));
+    let mut outbound = json!({
+        "type": "hysteria2",
+        "tag": "socks-out",
+        "server": server.address,
+        "server_port": server.port,
+        "password": server.auth
+    });
+    if !server.sni.is_empty() {
+        outbound["tls"] = json!({"enabled": true, "server_name": server.sni, "insecure": true});
+    } else {
+        outbound["tls"] = json!({"enabled": true, "insecure": true});
+    }
+    if !server.method.is_empty() {
+        outbound["obfs"] = json!({"type": "salamander", "password": server.encryption});
+    }
+    json!({
+        "log": {"level": "info"},
+        "dns": {
+            "servers": [{"tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": "socks-out"}],
+            "final": "proxy-dns",
+            "strategy": "prefer_ipv4",
+            "independent_cache": true
+        },
+        "inbounds": [{
+            "type": "tun",
+            "tag": "tun-in",
+            "address": ["172.19.0.1/28"],
+            "mtu": 1400,
+            "auto_route": true,
+            "strict_route": true,
+            "stack": "system",
+            "sniff": true
+        }],
+        "outbounds": [
+            outbound,
+            {"type": "direct", "tag": "direct-out"},
+            {"type": "dns", "tag": "dns-out"}
+        ],
+        "route": {
+            "rules": rules,
             "final": "socks-out",
             "auto_detect_interface": true
         }
@@ -41,8 +111,8 @@ pub fn build_singbox_config(socks_port: u16) -> Value {
 }
 
 /// Write the sing-box config and start it elevated (UAC prompt). Best-effort.
-pub fn start_tun_elevated(singbox_path: &PathBuf, workdir: &PathBuf, socks_port: u16) -> Result<(), String> {
-    let cfg = build_singbox_config(socks_port);
+pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &PathBuf) -> Result<(), String> {
+    let cfg = config;
     let cfg_path = workdir.join("singbox-tun.json");
     let json_text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&cfg_path, json_text).map_err(|e| format!("config write: {}", e))?;

@@ -13,17 +13,29 @@ configs to help others reach a free internet.
 - **TUN mode (experimental)** - full system VPN via bundled sing-box + wintun, requires
   admin (UAC) approval; stop it from the tray/Stop button
 - **Share-link import**: vmess / vless (REALITY, XTLS-vision) / trojan / shadowsocks /
-  socks / http, plus base64 subscription payloads and clipboard import
+  socks / http / hysteria2, plus base64 subscription payloads and clipboard import
+- **QR tools** (the Android scanner, desktop style): decode a QR code from a
+  clipboard screenshot, capture a screen region (Windows screen-clip) and import
+  the config, and show any profile as a QR code to move it back to a phone
+- **Test tools**: TCP ping, real URL latency test through a throwaway core instance
+  (the v2rayNG test service, per-server and batched), and a config-validate tool
+  that boots the core headlessly with the active profile
+- **Per-app routing** (TUN): pick which running programs bypass the tunnel or are
+  the only ones routed through it (sing-box process rules)
 - **Subscriptions** - add URLs, manual and timed auto-update
 - **TLS fragment** settings (packets / length / interval) wired into the Xray TLS dialer
 - **CDN IP rewrite** - Manually replace the connect address with a Cloudflare IP while
   keeping SNI/Host (same idea as Mahsang's "config IP")
 - **Routing presets** - proxy everything / bypass Iran (+China) with ad blocking, plus
   per-domain overrides; geoip/geosite data auto-download
+- **Geo assets manager** - view, update and delete geoip.dat/geosite.dat
 - **DNS settings** (remote DoH/UDP), sniffing, MUX, allow-insecure, IPv6 preference
 - **System tray** - connect/disconnect, open, quit; minimize-to-tray; auto launch at login;
   auto-connect at startup
 - **Live core logs** and session traffic counters
+- **hysteria2 support** - parse hysteria2:// / hy2:// links; hysteria2 profiles run
+  natively through the TUN engine (sing-box outbound)
+- **Deep link import** - `mahsadesk://` URL scheme to hand configs to the app
 - **Persian (RTL) and English** interface
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 

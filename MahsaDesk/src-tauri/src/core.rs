@@ -225,3 +225,165 @@ pub fn generate_and_start(
     let cfg = config_gen::build_config(settings, server);
     start_core(xray_path, workdir, &cfg, logs, area)
 }
+
+// ---------------------------------------------------------------------------
+// Test tools
+// ---------------------------------------------------------------------------
+const TEST_SOCKS_BASE: u16 = 18800;
+
+/// Real URL test, same idea as v2rayNG's HttpTestService: spin up a throwaway
+/// core instance for this single profile, then fetch http://www.gstatic.com/generate_204
+/// through its SOCKS inbound and measure the time.
+pub fn real_url_test(
+    xray_path: &PathBuf,
+    settings: &Settings,
+    server: &ServerProfile,
+    slot: usize,
+) -> Result<u32, String> {
+    let port = TEST_SOCKS_BASE + slot as u16;
+    let mut s = settings.clone();
+    s.socks_port = port;
+    s.http_port = port + 1;
+    s.loglevel = "none".into();
+    s.proxy_sharing = false;
+    let cfg = config_gen::build_config(&s, server);
+
+    let tmp = std::env::temp_dir().join(format!("mahsatest-{}", slot));
+    let _ = std::fs::create_dir_all(&tmp);
+    let cfg_path = tmp.join("test-config.json");
+    let json_text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&cfg_path, json_text).map_err(|e| e.to_string())?;
+
+    let mut child = Command::new(xray_path)
+        .args(["run", "-c"])
+        .arg(&cfg_path)
+        .current_dir(&tmp)
+        .env("XRAY_LOCATION", &tmp)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let res = (|| {
+        // wait for the inbound port to open (max ~5s)
+        let mut open = false;
+        for _ in 0..50 {
+            if child.try_wait().map(|o| o.is_some()).unwrap_or(false) {
+                return Err("test core exited immediately".to_string());
+            }
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                open = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !open {
+            return Err("test core did not open its port".to_string());
+        }
+        let start = std::time::Instant::now();
+        let proxy = reqwest::Proxy::all(&format!("socks5h://127.0.0.1:{}", port))
+            .map_err(|e| e.to_string())?;
+        let client = reqwest::blocking::Client::builder()
+            .proxy(proxy)
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .get("http://www.gstatic.com/generate_204")
+            .send()
+            .map_err(|e| format!("request: {}", e))?;
+        if !resp.status().is_success() && resp.status().as_u16() != 204 {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        Ok(start.elapsed().as_millis() as u32)
+    })();
+
+    let _ = child.kill();
+    res
+}
+
+/// Validate a generated config by booting the core briefly (headless).
+pub fn validate_config(xray_path: &PathBuf, cfg: &Value, slot: usize) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!("mahasacheck-{}", slot));
+    let _ = std::fs::create_dir_all(&tmp);
+    let cfg_path = tmp.join("check-config.json");
+    let json_text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&cfg_path, json_text).map_err(|e| e.to_string())?;
+    let _ = copy_geo(&tmp);
+    let mut child = Command::new(xray_path)
+        .args(["run", "-c"])
+        .arg(&cfg_path)
+        .current_dir(&tmp)
+        .env("XRAY_LOCATION", &tmp)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut ok = false;
+    let probe_port = cfg
+        .pointer("/inbounds/0/port")
+        .and_then(|p| p.as_u64())
+        .unwrap_or(0) as u16;
+    for _ in 0..25 {
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        if probe_port > 0 && std::net::TcpStream::connect(("127.0.0.1", probe_port)).is_ok() {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    let _ = child.kill();
+    if ok {
+        Ok(())
+    } else {
+        Err("core refused the config (exit during startup)".into())
+    }
+}
+
+fn copy_geo(dst: &PathBuf) -> Result<(), String> {
+    if let Ok(loc) = std::env::var("XRAY_LOCATION") {
+        for f in ["geoip.dat", "geosite.dat"] {
+            let from = PathBuf::from(&loc).join(f);
+            let to = dst.join(f);
+            if from.exists() && !to.exists() {
+                let _ = std::fs::copy(&from, &to);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// List user-visible running processes (for per-app proxy rules).
+pub fn list_processes() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let out = Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .output();
+        if let Ok(o) = out {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut names: Vec<String> = text
+                .lines()
+                .filter_map(|l| {
+                    let stripped = l.trim().trim_start_matches('"');
+                    let n = stripped.split_once('"').map(|(a, _)| a)?;
+                    if n.is_empty() || n.eq_ignore_ascii_case("system") || n.eq_ignore_ascii_case("svchost.exe") {
+                        None
+                    } else {
+                        Some(n.to_string())
+                    }
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            return names;
+        }
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}

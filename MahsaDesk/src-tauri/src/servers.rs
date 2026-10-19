@@ -137,6 +137,8 @@ pub fn parse_link(link: &str) -> Option<ServerProfile> {
         parse_userinfo_link(rest, "trojan")
     } else if let Some(rest) = link.strip_prefix("ss://") {
         parse_ss(rest)
+    } else if let Some(rest) = link.strip_prefix("hysteria2://").or_else(|| link.strip_prefix("hy2://")) {
+        parse_userinfo_link(rest, "hysteria2")
     } else if let Some(rest) = link.strip_prefix("socks://") {
         parse_url_scheme(rest, "socks")
     } else if let Some(rest) = link.strip_prefix("http://") {
@@ -253,8 +255,19 @@ fn parse_userinfo_link(rest: &str, protocol: &str) -> Option<ServerProfile> {
     p.remark = remark.unwrap_or_else(|| host.clone());
     p.auth = percent_decode(&auth);
     p.address = host;
-    p.port = port;
-    p.net = params.get("type").cloned().unwrap_or_else(|| "tcp".into());
+    p.port = port;    if protocol == "hysteria2" {
+        p.net = "tcp".into();
+        p.security = "tls".into();
+        p.method = params.get("obfs").cloned().unwrap_or_default();
+        p.encryption = params.get("obfs-password").cloned().unwrap_or_default();
+        p.sni = params.get("sni").cloned().unwrap_or_default();
+        p.alpn = params.get("alpn").cloned().unwrap_or_default();
+        return Some(p);
+    }
+    p.net = params
+        .get("type")
+        .cloned()
+        .unwrap_or_else(|| "tcp".into());
     p.header_type = params.get("headerType").cloned().unwrap_or_default();
     p.host = params.get("host").cloned().unwrap_or_default();
     p.path = params
@@ -380,4 +393,122 @@ fn percent_decode(s: &str) -> String {
     urlencoding::decode(s)
         .map(|c| c.into_owned())
         .unwrap_or_else(|_| s.to_string())
+}
+
+fn percent_encode(s: &str) -> String {
+    urlencoding::encode(s).into_owned()
+}
+
+/// Build a share link from a profile (used for QR display / clipboard share),
+/// so hand-edited or decrypted profiles can be exported too.
+pub fn build_link(p: &ServerProfile) -> String {
+    match p.protocol.as_str() {
+        "vmess" => {
+            let v = serde_json::json!({
+                "v": "2",
+                "ps": p.remark,
+                "add": p.address,
+                "port": p.port.to_string(),
+                "id": p.auth,
+                "aid": p.alter_id.to_string(),
+                "scy": if p.encryption.is_empty() { "auto" } else { p.encryption.as_str() },
+                "net": if p.net.is_empty() { "tcp" } else { p.net.as_str() },
+                "type": p.header_type,
+                "host": p.host,
+                "path": p.path,
+                "tls": p.security,
+                "sni": p.sni,
+                "alpn": p.alpn,
+                "fp": p.fingerprint
+            });
+            format!(
+                "vmess://{}",
+                STANDARD.encode(v.to_string())
+            )
+        }
+        "hysteria2" => {
+            let mut q = vec![
+                format!("sni={}", p.sni),
+                format!("obfs={}", p.method),
+            ];
+            if !p.encryption.is_empty() {
+                q.push(format!("obfs-password={}", p.encryption));
+            }
+            q.push(format!("insecure={}", true));
+            format!(
+                "hysteria2://{}@{}:{}?{}#{}",
+                percent_encode(&p.auth),
+                p.address,
+                p.port,
+                q.join("&"),
+                percent_encode(&p.remark)
+            )
+        }
+        _ => {
+            let auth = if p.protocol == "shadowsocks" {
+                STANDARD.encode(format!("{}:{}", p.method, p.auth))
+            } else {
+                percent_encode(&p.auth)
+            };
+            let mut q = Vec::new();
+            match p.protocol.as_str() {
+                "vless" => {
+                    q.push(format!("encryption={}", if p.encryption.is_empty() { "none" } else { p.encryption.as_str() }));
+                    q.push(format!("security={}", if p.security.is_empty() { "none" } else { p.security.as_str() }));
+                    if !p.flow.is_empty() {
+                        q.push(format!("flow={}", p.flow));
+                    }
+                }
+                "trojan" => {
+                    q.push(format!("security={}", if p.security.is_empty() { "tls" } else { p.security.as_str() }));
+                }
+                "shadowsocks" => {}
+                "socks" | "http" => {
+                    if !p.auth.is_empty() {
+                        q.push(String::new());
+                    }
+                }
+                _ => {
+                    q.push(format!("security={}", if p.security.is_empty() { "none" } else { p.security.as_str() }));
+                }
+            }
+            if !p.security.is_empty() && p.protocol != "hysteria2" {
+                q.push(format!("sni={}", p.sni));
+                q.push(format!("fp={}", p.fingerprint));
+                if p.security == "reality" {
+                    q.push(format!("pbk={}", p.pbk));
+                    q.push(format!("sid={}", p.sid));
+                    q.push(format!("spx={}", p.spx));
+                }
+            }
+            if !p.alpn.is_empty() {
+                q.push(format!("alpn={}", p.alpn));
+            }
+            q.push(format!("type={}", if p.net.is_empty() { "tcp" } else { p.net.as_str() }));
+            if !p.host.is_empty() {
+                q.push(format!("host={}", p.host));
+            }
+            if !p.path.is_empty() {
+                q.push(format!("path={}", percent_encode(&p.path)));
+            }
+            let qs = q.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("&");
+            let scheme = if p.protocol == "shadowsocks" { "ss" } else { p.protocol.as_str() };
+            let authpart = if p.protocol == "shadowsocks" {
+                auth
+            } else if qs.is_empty() {
+                auth
+            } else {
+                auth
+            };
+            format!(
+                "{}://{}@{}:{}{}#{}",
+                scheme,
+                authpart,
+                p.address,
+                p.port,
+                if qs.is_empty() { String::new() } else { format!("?{}", qs) },
+                percent_encode(&p.remark)
+            )
+        }
+    }
 }

@@ -11,6 +11,10 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:event:allow-unlisten",
-    "opener:default"
+    "opener:default",
+    "clipboard-manager:allow-read-image",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "deep-link:default"
   ]
 }
