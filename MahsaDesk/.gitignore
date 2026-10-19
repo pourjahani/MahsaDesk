@@ -1,0 +1,10 @@
+src-tauri/target/
+node_modules/
+dist/
+src-tauri/gen/
+src-tauri/binaries/xray.exe
+src-tauri/binaries/sing-box.exe
+src-tauri/binaries/wintun.dll
+src-tauri/binaries/geoip.dat
+src-tauri/binaries/geosite.dat
+npm-debug.log*

@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "MahsaDesk/src-tauri -> target"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download core binaries
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File MahsaDesk/.scripts/download-binaries.ps1
+
+      - name: Install frontend deps
+        working-directory: MahsaDesk
+        run: npm ci --allow-scripts || npm install
+
+      - name: Build Tauri app
+        working-directory: MahsaDesk
+        run: npm run tauri build
+
+      - name: Create portable exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "MahsaDesk/src-tauri/target/release/MahsaDesk.exe" | Select-Object -First 1
+          $stage = ".release"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $exe.FullName "$stage/MahsaDeskPortable.exe"
+          # portable: binaries travel in a folder next to the exe
+          Copy-Item "MahsaDesk/src-tauri/binaries" "$stage/binaries" -Recurse
+          Compress-Archive -Path "$stage/MahsaDeskPortable.exe", "$stage/binaries" -DestinationPath "MahsaDeskPort.win.zip" -Force
+          # installer artifact from NSIS bundle
+          $nsis = Get-ChildItem "MahsaDesk/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if ($nsis) { Copy-Item $nsis.FullName "MahsaDeskSetup_v0.1.exe" }
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MahsaDeskPort.win.zip
+            MahsaDeskSetup_v0.1.exe
+          generate_release_notes: true
