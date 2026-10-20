@@ -1,6 +1,7 @@
 use base64::Engine;
-use mahsadesk::{config_gen, servers};
+use mahsadesk::{config_gen, psiphon, servers, tools};
 use serde_json::Value;
+use std::path::Path;
 
 #[test]
 fn parses_hysteria2_link() {
@@ -154,4 +155,181 @@ fn routing_presets_present() {
         x if x >= 2 => {}
         n => panic!("expected >=2 rules, got {}", n),
     }
+}
+
+// ---------------------------------------------------------------------------
+// ECH + domain fronting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ech_config_list_inserted() {
+    let raw = "trojan://pass@a.com:443?sni=a.com&type=tcp#E";
+    let p = servers::parse_link(raw).unwrap();
+    let mut s = default_settings();
+    s.ech_enabled = true;
+    s.ech_config = "".into();
+    let cfg = config_gen::build_config(&s, &p);
+    let out = cfg.pointer("/outbounds/0").unwrap();
+    assert_eq!(
+        out.pointer("/streamSettings/tlsSettings/echConfigList")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "https://1.1.1.1/dns-query",
+        "empty ech_config must fall back to the DoH URL"
+    );
+    // explicit base64 config must pass through
+    s.ech_config = "dWJxVGVzdA==".into();
+    let cfg = config_gen::build_config(&s, &p);
+    assert_eq!(
+        cfg.pointer("/outbounds/0/streamSettings/tlsSettings/echConfigList")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "dWJxVGVzdA=="
+    );
+    // reality profiles never get ECH
+    let rp = servers::parse_link("vless://u@r.example.com:443?security=reality&pbk=PUBKEY123&sid=ab01#R").unwrap();
+    s.ech_enabled = true;
+    let cfg = config_gen::build_config(&s, &rp);
+    assert!(cfg
+        .pointer("/outbounds/0/streamSettings/realitySettings/echConfigList")
+        .is_none());
+}
+
+#[test]
+fn domain_fronting_swaps_address_and_sni_keeps_host() {
+    let raw = "vmess://eyJ2IjoiMiIsInBzIjoiTiIsImFkZCI6InJlYWwtc2VydmVyLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjgxIiwiYWlkIjoiMCIsIm5ldCI6IndzIiwicGF0aCI6Ii9wIiwidGxzIjoidGxzIn0=";
+    let p = servers::parse_link(raw).unwrap();
+    let mut s = default_settings();
+    s.front_enabled = true;
+    s.front_host = "cdn.example.net".into();
+    let cfg = config_gen::build_config(&s, &p);
+    let out = cfg.pointer("/outbounds/0").unwrap();
+    assert_eq!(
+        out.pointer("/settings/vnext/0/address").unwrap().as_str().unwrap(),
+        "cdn.example.net",
+        "connect address must become the fronting CDN"
+    );
+    assert_eq!(
+        out.pointer("/streamSettings/tlsSettings/serverName")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "cdn.example.net",
+        "SNI must present the CDN domain"
+    );
+    assert_eq!(
+        out.pointer("/streamSettings/wsSettings/headers/Host")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "real-server.com",
+        "Host header must keep the real destination"
+    );
+    // off by default
+    let cfg = config_gen::build_config(&default_settings(), &p);
+    assert_eq!(
+        cfg.pointer("/outbounds/0/settings/vnext/0/address")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "real-server.com"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Psiphon config builder
+// ---------------------------------------------------------------------------
+
+#[test]
+fn psiphon_config_builder_defaults_and_keys() {
+    let mut s = default_settings();
+    let cfg = psiphon::build_config(&s, None, Path::new("data"), Path::new("missing.json"));
+    assert_eq!(
+        cfg.get("LocalSocksProxyPort").unwrap().as_u64().unwrap(),
+        7501
+    );
+    assert_eq!(
+        cfg.get("LocalHttpProxyPort").unwrap().as_u64().unwrap(),
+        7502
+    );
+    assert_eq!(cfg.get("PropagationChannelId").unwrap(), "FFFFFFFFFFFFFFFF");
+    assert_eq!(cfg.get("SponsorId").unwrap(), "FFFFFFFFFFFFFFFF");
+    assert!(cfg.get("EmitDiagnosticNotices").unwrap().as_bool().unwrap());
+    assert!(cfg.get("UpstreamProxyURL").is_none(), "only mode: no upstream");
+
+    // psiphon-after: upstream to xray's socks
+    s.psiphon_protocol = "normal".into();
+    s.psiphon_region = "de".into();
+    s.psiphon_aggressive = true;
+    let cfg = psiphon::build_config(&s, Some(10808), Path::new("data"), Path::new("missing.json"));
+    assert_eq!(
+        cfg.get("UpstreamProxyURL").unwrap().as_str().unwrap(),
+        "socks5://127.0.0.1:10808"
+    );
+    assert_eq!(cfg.get("EgressRegion").unwrap().as_str().unwrap(), "DE");
+    assert_eq!(cfg.get("AggressiveEstablishment").unwrap().as_bool().unwrap(), true);
+    let protos = cfg
+        .get("LimitTunnelProtocols")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert!(protos.iter().any(|p| p.as_str().unwrap() == "TLS-OSSH"));
+}
+
+// ---------------------------------------------------------------------------
+// DNS scanner primitives
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dns_query_packet_shape() {
+    let pkt = tools::dns_query_packet("a.example.co");
+    assert_eq!(pkt[2], 0x01, "QR=0 RD=1");
+    assert_eq!(&pkt[4..6], &[0x00, 0x01], "one question");
+    let body = String::from_utf8_lossy(&pkt[12..]);
+    assert!(body.contains("example"));
+    assert!(pkt.ends_with(&[0x00, 0x01, 0x00, 0x01]), "A/IN");
+}
+
+#[test]
+fn parse_dns_answer_reads_a_records() {
+    // hand-built response: header + question + one A answer
+    let mut pkt: Vec<u8> = vec![0xAB, 0xCD, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00];
+    for label in ["e", "x", "co"] {
+        pkt.push(label.len() as u8);
+        pkt.extend_from_slice(label.as_bytes());
+    }
+    pkt.push(0);
+    pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // A IN
+    // answer 1: compressed name pointer to offset 12
+    pkt.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x04]);
+    pkt.extend_from_slice(&[142, 250, 74, 14]);
+    // answer 2: literal name (example.co\x00), then A record rdata
+    pkt.extend_from_slice(&[0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e']);
+    pkt.extend_from_slice(&[0x02, b'c', b'o', 0x00]);
+    pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x04]);
+    pkt.extend_from_slice(&[142, 250, 74, 99]);
+    // answer 3: non-A (CNAME) must be skipped
+    pkt.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x03]);
+    pkt.extend_from_slice(&[b'w', b'w', b'w']);
+    let ips = tools::parse_dns_answer(&pkt);
+    assert_eq!(ips.len(), 2, "A records parsed, CNAME skipped: {:?}", ips);
+    assert_eq!(ips[0], "142.250.74.14");
+    assert_eq!(ips[1], "142.250.74.99");
+}
+
+#[test]
+fn ip_presets_expand_to_valid_ips() {
+    let ips = tools::expand_candidate_ips("cloudflare", "", 8);
+    assert!(!ips.is_empty());
+    assert!(ips.len() <= 64);
+    for ip in &ips {
+        ip.parse::<std::net::Ipv4Addr>()
+            .unwrap_or_else(|e| panic!("bad ip {} : {}", ip, e));
+    }
+    // custom list: raw IPs pass through
+    let custom = "1.2.3.4\n5.6.7.8";
+    let ips = tools::expand_candidate_ips("custom", custom, 8);
+    assert_eq!(ips, vec!["1.2.3.4", "5.6.7.8"]);
 }

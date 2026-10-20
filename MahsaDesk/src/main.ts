@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +78,8 @@ const NAV = [
   { id: "routing", icon: "routing", label: "nav.routing" },
   { id: "apps", icon: "apps", label: "nav.apps" },
   { id: "assets", icon: "dl", label: "nav.assets" },
+  { id: "psiphon", icon: "shield", label: "nav.psiphon" },
+  { id: "tools", icon: "globe", label: "nav.tools" },
   { id: "settings", icon: "settings", label: "nav.settings" },
   { id: "logs", icon: "logs", label: "nav.logs" },
   { id: "about", icon: "about", label: "nav.about" },
@@ -119,11 +121,13 @@ function buildLayout() {
   btnSystem.onclick = () => doConnect("system");
   const btnTun = el("button", "btn", t("status.tunMode"));
   btnTun.onclick = () => doConnect("tun");
+  const btnPsiphon = el("button", "btn", t("status.psiphonOnly"));
+  btnPsiphon.onclick = () => doConnect("psiphon-only");
   const btnStop = el("button", "btn ghost", "Stop");
   btnStop.id = "btn-stop";
   btnStop.style.display = "none";
   btnStop.onclick = () => doDisconnect();
-  btnRow.append(btnSystem, btnTun, btnStop);
+  btnRow.append(btnSystem, btnTun, btnPsiphon, btnStop);
   trafficEl = el("div", "traffic", "");
   connectCard.append(row, trafficEl, btnRow);
   sidebar.append(connectCard);
@@ -154,6 +158,8 @@ function renderView() {
     case "routing": renderRouting(); break;
     case "apps": renderApps(); break;
     case "assets": renderAssets(); break;
+    case "psiphon": renderPsiphon(); break;
+    case "tools": renderTools(); break;
     case "settings": renderSettings(); break;
     case "logs": renderLogs(); break;
     case "about": renderAbout(); break;
@@ -166,7 +172,15 @@ async function updateStatus() {
     const running = s.running;
     statusDot.className = `dot ${running ? "on" : "off"}`;
     statusText.textContent = running
-      ? `${t(s.mode === "tun" ? "status.tunMode" : "status.systemMode")} - ${t("status.connected")}`
+      ? `${t(
+s.mode === "tun"
+        ? "status.tunMode"
+        : s.mode === "psiphon-only"
+          ? "status.psiphonOnly"
+          : s.mode === "psiphon-after"
+            ? "status.psiphonAfter"
+            : "status.systemMode"
+      )} - ${t("status.connected")}`
       : t("status.disconnected");
     const stop = document.getElementById("btn-stop");
     if (stop) stop.style.display = running ? "" : "none";
@@ -843,6 +857,383 @@ function renderAssets() {
 }
 
 // ---------------------------------------------------------------------------
+// psiphon view
+// ---------------------------------------------------------------------------
+
+const PSIPHON_REGIONS: [string, string][] = [
+  ["", "psiphon.regionAuto"],
+  ["US", "United States"],
+  ["CA", "Canada"],
+  ["GB", "United Kingdom"],
+  ["NL", "Netherlands"],
+  ["DE", "Germany"],
+  ["SE", "Sweden"],
+  ["ES", "Spain"],
+  ["SG", "Singapore"],
+  ["AU", "Australia"],
+  ["HK", "Hong Kong"],
+  ["TR", "Turkey"],
+];
+
+function renderPsiphon() {
+  const wrap = el("div", "view");
+  const head = el("div", "view-head");
+  head.append(el("h1", "", t("psiphon.title")));
+  const actions = el("div", "actions");
+  const statusBadge = el("span", "badge");
+  api.status().then((s) => {
+    const run = s.running && (s.mode === "psiphon-only" || s.mode === "psiphon-after");
+    statusBadge.className = `badge ${run ? "ok" : ""}`;
+    statusBadge.textContent = run ? t("status.connected") : t("status.disconnected");
+  });
+  actions.append(statusBadge);
+  head.append(actions);
+  wrap.append(head);
+  wrap.append(el("p", "muted", t("psiphon.note")));
+  if (!settings) return;
+  const s = settings;
+
+  // connect cards
+  const grid = el("div", "bento");
+  for (const cfg of [
+    { mode: "psiphon-only", title: t("psiphon.only"), desc: t("psiphon.onlyDesc") },
+    { mode: "psiphon-after", title: t("psiphon.after"), desc: t("psiphon.afterDesc") },
+  ]) {
+    const box = el("div", "bento-box");
+    box.append(el("h3", "", cfg.title), el("p", "muted", cfg.desc));
+    const row = el("div", "actions");
+    const btn = el("button", "btn primary", t("psiphon.connect"));
+    btn.onclick = async () => {
+      await save({ psiphon_mode: cfg.mode === "psiphon-only" ? "only" : "after" });
+      btn.disabled = true;
+      btn.textContent = "...";
+      try {
+        await api.connect(cfg.mode);
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+      }
+      updateStatus();
+      renderView();
+    };
+    row.append(btn);
+    box.append(row);
+    grid.append(box);
+  }
+  // stop button
+  const stopBox = el("div", "bento-box");
+  stopBox.append(el("h3", "", t("psiphon.stop")));
+  const stopRow = el("div", "actions");
+  const btnStop = el("button", "btn ghost", t("psiphon.stop"));
+  btnStop.onclick = async () => {
+    await api.disconnect();
+    updateStatus();
+    renderView();
+  };
+  stopRow.append(btnStop);
+  stopBox.append(stopRow);
+  grid.append(stopBox);
+  wrap.append(grid);
+
+  // settings card
+  const card = el("div", "card");
+  card.append(el("h2", "", t("settings.psiphonCard")));
+  const grid2 = el("div", "grid2");
+  const mkNum = (title: string, key: keyof Settings) => {
+    const f = el("div", "field");
+    f.append(el("label", "", title));
+    const i = el("input") as HTMLInputElement;
+    i.type = "number";
+    i.value = String((s as any)[key] ?? "");
+    i.addEventListener("change", () => save({ [key]: Number(i.value || 0) } as any));
+    f.append(i);
+    return f;
+  };
+  const mkSel = (title: string, key: keyof Settings, options: [string, string][]) => {
+    const f = el("div", "field");
+    f.append(el("label", "", title));
+    const sel = el("select") as HTMLSelectElement;
+    for (const [k, v] of options) {
+      const o = el("option", "", v) as HTMLOptionElement;
+      o.value = k;
+      sel.append(o);
+    }
+    sel.value = String((s as any)[key] ?? "");
+    sel.onchange = () => save({ [key]: sel.value } as any);
+    f.append(sel);
+    return f;
+  };
+  const mkSw = (title: string, key: keyof Settings) => {
+    const row = el("div", "switch-row");
+    row.append(el("span", "", title));
+    const sw = el("button", `switch ${(s as any)[key] ? "on" : ""}`);
+    sw.onclick = async () => {
+      await save({ [key]: !(s as any)[key] } as any);
+      (s as any)[key] = !(s as any)[key];
+      sw.className = `switch ${(s as any)[key] ? "on" : ""}`;
+    };
+    row.append(sw);
+    return row;
+  };
+  grid2.append(
+    mkNum(t("psiphon.socksPort"), "psiphon_socks_port"),
+    mkNum(t("psiphon.httpPort"), "psiphon_http_port"),
+    mkSel(t("psiphon.region"), "psiphon_region", PSIPHON_REGIONS.map(([k, v]) => [k, k ? v : t(v)] as [string, string])),
+    mkSel(t("psiphon.protocol"), "psiphon_protocol", [
+      ["auto", t("psiphon.protoAuto")],
+      ["normal", t("psiphon.protoNormal")],
+      ["conduit", t("psiphon.protoConduit")],
+    ])
+  );
+  card.append(grid2);
+  card.append(mkSw(t("psiphon.aggressive"), "psiphon_aggressive"));
+  wrap.append(card);
+  mainEl.append(wrap);
+}
+
+// Engine presence check removed (needs a dedicated probe); the connect error
+// alert already tells the user when psiphon-tunnel-core.exe is missing.
+
+// ---------------------------------------------------------------------------
+// tools view (DNS scanner / IP scanner / network tools)
+// ---------------------------------------------------------------------------
+
+function renderTools() {
+  const wrap = el("div", "view");
+  const head = el("div", "view-head");
+  head.append(el("h1", "", t("tools.title")));
+  wrap.append(head);
+  if (!settings) return;
+
+  // ---- DNS scanner ----
+  const dnsCard = el("div", "card");
+  dnsCard.append(el("h2", "", t("tools.dnsTitle")), el("p", "muted", t("tools.dnsNote")));
+  const dnsRow = el("div", "grid2");
+  const dnsField = el("div", "field");
+  dnsField.append(el("label", "", t("tools.dnsDomain")));
+  const dnsInput = el("input") as HTMLInputElement;
+  dnsInput.value = "www.google.com";
+  dnsField.append(dnsInput);
+  const dnsBtnCol = el("div", "field");
+  const dnsBtn = el("button", "btn primary", t("tools.dnsRun"));
+  dnsBtnCol.append(dnsBtn);
+  dnsRow.append(dnsField, dnsBtnCol);
+  dnsCard.append(dnsRow);
+  const dnsOut = el("div", "lines") as HTMLElement;
+  dnsOut.style.display = "none";
+  dnsCard.append(dnsOut);
+  dnsBtn.onclick = async () => {
+    const domain = dnsInput.value.trim();
+    if (!domain) return;
+    dnsBtn.disabled = true;
+    dnsBtn.textContent = "...";
+    try {
+      const res: DnsResult[] = await api.dnsScan(domain);
+      dnsOut.style.display = "";
+      dnsOut.innerHTML = "";
+      const statusLabel = (st: string) =>
+        st === "ok"
+          ? t("tools.dnsOk")
+          : st === "timeout"
+            ? t("tools.dnsTimeout")
+            : st === "empty"
+              ? t("tools.dnsEmpty")
+              : st === "differs"
+                ? t("tools.dnsDiffers")
+                : st;
+      for (const r of res) {
+        const line = el("div", "switch-row");
+        line.append(
+          el("span", "mono", `${r.server} (${r.kind})`),
+          el("span", "", statusLabel(r.status)),
+          el("span", "badge", r.delay != null ? `${r.delay} ms` : "-"),
+          el("span", "mono", r.ips.slice(0, 2).join(" "))
+        );
+        dnsOut.append(line);
+      }
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    dnsBtn.disabled = false;
+    dnsBtn.textContent = t("tools.dnsRun");
+  };
+  wrap.append(dnsCard);
+
+  // ---- Mahsa IP scanner ----
+  const ipCard = el("div", "card");
+  ipCard.append(el("h2", "", t("tools.ipTitle")), el("p", "muted", t("tools.ipNote")));
+  const ipGrid = el("div", "grid3");
+  const mkField = (label: string) => {
+    const f = el("div", "field");
+    if (label) f.append(el("label", "", label));
+    return f;
+  };
+  const presetF = mkField(t("tools.ipPreset"));
+  const presetSel = el("select") as HTMLSelectElement;
+  for (const [k, v] of [
+    ["cloudflare", "Cloudflare"],
+    ["google", "Google"],
+    ["digitalocean", "DigitalOcean"],
+    ["custom", "Custom"],
+  ] as [string, string][]) {
+    const o = el("option", "", v) as HTMLOptionElement;
+    o.value = k;
+    presetSel.append(o);
+  }
+  presetF.append(presetSel);
+  const portF = mkField(t("tools.ipPort"));
+  const portIn = el("input") as HTMLInputElement;
+  portIn.type = "number";
+  portIn.value = "443";
+  portF.append(portIn);
+  const btnF = mkField("");
+  const ipBtn = el("button", "btn primary", t("tools.ipRun"));
+  btnF.append(ipBtn);
+  ipGrid.append(presetF, portF, btnF);
+  ipCard.append(ipGrid);
+  const customTa = el("textarea", "lines") as HTMLTextAreaElement;
+  customTa.placeholder = "104.16.0.0/16\n172.64.0.0/16";
+  customTa.style.display = "none";
+  presetSel.onchange = () => {
+    customTa.style.display = presetSel.value === "custom" ? "" : "none";
+  };
+  ipCard.append(customTa);
+  const ipOut = el("div", "lines") as HTMLElement;
+  ipCard.append(ipOut);
+  ipBtn.onclick = async () => {
+    ipBtn.disabled = true;
+    ipBtn.textContent = t("tools.ipScanning");
+    ipOut.innerHTML = "";
+    try {
+      const res: IpResult[] = await api.ipScan(
+        presetSel.value,
+        customTa.value,
+        Number(portIn.value || 443)
+      );
+      const max = 24;
+      let shown = 0;
+      for (const r of res) {
+        if (shown >= max) break;
+        if (!r.ok) continue;
+        shown++;
+        const row = el("div", "switch-row");
+        row.append(
+          el("span", "mono", r.ip),
+          el("span", "", t("tools.dnsOk")),
+          el("span", "badge", `${r.delay} ms`)
+        );
+        const useBtn = el("button", "btn", t("tools.ipUse"));
+        useBtn.onclick = async () => {
+          await save({ cdn_ip: r.ip, cdn_mode: "manual" });
+          useBtn.textContent = t("saved");
+        };
+        row.append(useBtn);
+        ipOut.append(row);
+      }
+      if (shown === 0) {
+        ipOut.append(el("p", "muted", `- ${t("tools.dnsTimeout")}`));
+      }
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    ipBtn.disabled = false;
+    ipBtn.textContent = t("tools.ipRun");
+  };
+  wrap.append(ipCard);
+
+  // ---- Network tools ----
+  const netCard = el("div", "card");
+  netCard.append(el("h2", "", t("tools.netTitle")));
+  const netGrid = el("div", "grid2");
+  const hostF = mkField(t("tools.netHost"));
+  const hostIn = el("input") as HTMLInputElement;
+  hostIn.value = "www.google.com";
+  hostF.append(hostIn);
+  const portChk = mkField(t("tools.netPortNo"));
+  const netPortIn = el("input") as HTMLInputElement;
+  netPortIn.type = "number";
+  netPortIn.value = "443";
+  portChk.append(netPortIn);
+  netGrid.append(hostF, portChk);
+  netCard.append(netGrid);
+  const netBtns = el("div", "actions");
+  const netOut = el("pre", "lines") as HTMLElement;
+  netOut.style.display = "none";
+  const runNet = (kind: string) => async () => {
+    const host = hostIn.value.trim();
+    if (!host) return;
+    netOut.style.display = "";
+    if (kind === "port") {
+      const r = await api.portCheck(host, Number(netPortIn.value || 443));
+      netOut.textContent = r.open
+        ? `open (${r.delay} ms)`
+        : "closed / filtered";
+      return;
+    }
+    netOut.textContent = "...";
+    const r = await api.netTool(kind, host);
+    netOut.textContent = r.detail;
+  };
+  for (const [kind, label] of [
+    ["ping", t("tools.netPing")],
+    ["trace", t("tools.netTrace")],
+    ["dns", t("tools.netDns")],
+    ["port", t("tools.netPort")],
+  ] as [string, string][]) {
+    const b = el("button", "btn", label);
+    b.onclick = runNet(kind);
+    netBtns.append(b);
+  }
+  netCard.append(netBtns, netOut);
+  wrap.append(netCard);
+
+  // ---- my IP + speed ----
+  const myCard = el("div", "card");
+  myCard.append(el("h2", "", t("tools.myIpTitle")));
+  const myOut = el("div", "lines") as HTMLElement;
+  myCard.append(myOut);
+  const myBtns = el("div", "actions");
+  const myBtn = el("button", "btn", t("tools.myIpRun"));
+  myBtn.onclick = async () => {
+    myBtn.disabled = true;
+    try {
+      const info = await api.myIp();
+      myOut.innerHTML = "";
+      for (const key of ["query", "country", "city", "isp", "as"]) {
+        if (info[key]) {
+          const row = el("div", "switch-row");
+          row.append(el("span", "", key), el("span", "mono", String(info[key])));
+          myOut.append(row);
+        }
+      }
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    myBtn.disabled = false;
+  };
+  const speedBtn = el("button", "btn", t("tools.speedRun"));
+  const speedOut = el("span", "badge", "");
+  speedBtn.onclick = async () => {
+    speedBtn.disabled = true;
+    speedOut.className = "badge";
+    speedOut.textContent = "...";
+    try {
+      const mbps = await api.netSpeed(10_000_000);
+      speedOut.className = mbps > 10 ? "badge ok" : mbps > 2 ? "badge mid" : "badge fail";
+      speedOut.textContent = `${mbps.toFixed(1)} ${t("tools.speedMbps")}`;
+    } catch (e: any) {
+      speedOut.className = "badge fail";
+      speedOut.textContent = `${e}`;
+    }
+    speedBtn.disabled = false;
+  };
+  myBtns.append(myBtn, speedBtn, speedOut);
+  myCard.append(myBtns);
+  wrap.append(myCard);
+
+  mainEl.append(wrap);
+}
+
+// ---------------------------------------------------------------------------
 // settings view
 // ---------------------------------------------------------------------------
 
@@ -972,6 +1363,29 @@ function renderSettings() {
   );
   frag.append(cdnGrid);
   wrap.append(frag);
+
+  // ECH + domain fronting (stealth card)
+  const stealth = el("div", "card");
+  stealth.append(el("h2", "", t("settings.echTitle")));
+  stealth.append(mkSwitch(t("settings.echOn"), "ech_enabled"));
+  stealth.append(mkInput(t("settings.echConfig"), "ech_config"));
+
+  const frontHead = el("h2", "", t("settings.frontTitle"));
+  stealth.append(frontHead);
+  stealth.append(mkSwitch(t("settings.frontOn"), "front_enabled"));
+  stealth.append(mkInput(t("settings.frontHost"), "front_host"));
+  wrap.append(stealth);
+
+  // psiphon ports card (full controls live on the Psiphon page)
+  const pCard = el("div", "card");
+  pCard.append(el("h2", "", t("settings.psiphonCard")));
+  const pGrid = el("div", "grid2");
+  pGrid.append(
+    mkInput(t("psiphon.socksPort"), "psiphon_socks_port", "number"),
+    mkInput(t("psiphon.httpPort"), "psiphon_http_port", "number")
+  );
+  pCard.append(pGrid);
+  wrap.append(pCard);
 
   wrap.append(el("p", "muted", t("settings.danger")));
   mainEl.append(wrap);

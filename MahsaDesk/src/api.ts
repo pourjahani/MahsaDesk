@@ -67,6 +67,16 @@ export interface Settings {
   proxy_sharing: boolean;
   per_app_mode: string;
   per_app_list: string;
+  psiphon_mode: string;
+  psiphon_socks_port: number;
+  psiphon_http_port: number;
+  psiphon_region: string;
+  psiphon_protocol: string;
+  psiphon_aggressive: boolean;
+  ech_enabled: boolean;
+  ech_config: string;
+  front_enabled: boolean;
+  front_host: string;
 }
 
 export const api = {
@@ -106,7 +116,41 @@ export const api = {
   assetsInfo: () =>
     invoke<{ name: string; exists: boolean; size: number }[]>("assets_info"),
   deleteGeo: (name: string) => invoke<void>("delete_geo", { name }),
+  dnsScan: (domain: string) =>
+    invoke<DnsResult[]>("dns_scan_cmd", { domain }),
+  ipScan: (preset: string, custom: string, port: number) =>
+    invoke<IpResult[]>("ip_scan_cmd", { preset, custom, port }),
+  netTool: (kind: string, host: string) =>
+    invoke<NetToolOutput>("net_tool_cmd", { kind, host }),
+  portCheck: (host: string, port: number) =>
+    invoke<PortCheckResult>("port_check_cmd", { host, port }),
+  myIp: () => invoke<Record<string, string>>("my_ip_cmd"),
+  netSpeed: (bytes: number) => invoke<number>("net_speed_cmd", { bytes }),
 };
+
+export interface DnsResult {
+  server: string;
+  kind: string;
+  status: string;
+  delay: number | null;
+  ips: string[];
+}
+
+export interface IpResult {
+  ip: string;
+  ok: boolean;
+  delay: number | null;
+}
+
+export interface NetToolOutput {
+  ok: boolean;
+  detail: string;
+}
+
+export interface PortCheckResult {
+  open: boolean;
+  delay: number | null;
+}
 
 /** Read a QR-coded config from an image sitting in the clipboard. */
 export async function readQrFromClipboard(): Promise<string | null> {

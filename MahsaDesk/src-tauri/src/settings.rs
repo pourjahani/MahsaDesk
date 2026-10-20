@@ -33,6 +33,19 @@ pub struct Settings {
     pub proxy_sharing: bool,     // listen on 0.0.0.0 instead of 127.0.0.1
     pub per_app_mode: String,    // "off" | "bypass" | "allow" (TUN only)
     pub per_app_list: String,    // newline separated process names
+    // Psiphon tunnel (psiphon only / psiphon after)
+    pub psiphon_mode: String,    // "off" | "only" | "after"
+    pub psiphon_socks_port: u16, // default 7501
+    pub psiphon_http_port: u16,  // default 7502
+    pub psiphon_region: String,  // "" = auto, else 2-letter country
+    pub psiphon_protocol: String, // "auto" | "normal" | "conduit"
+    pub psiphon_aggressive: bool,
+    // Encrypted Client Hello (Xray tlsSettings.echConfigList)
+    pub ech_enabled: bool,
+    pub ech_config: String,      // base64 ECHConfigList or DoH URL; empty = auto
+    // Domain fronting (fake host)
+    pub front_enabled: bool,
+    pub front_host: String,      // CDN domain to connect to
 }
 
 impl Default for Settings {
@@ -65,6 +78,16 @@ impl Default for Settings {
             proxy_sharing: false,
             per_app_mode: "off".into(),
             per_app_list: String::new(),
+            psiphon_mode: "off".into(),
+            psiphon_socks_port: 7501,
+            psiphon_http_port: 7502,
+            psiphon_region: String::new(),
+            psiphon_protocol: "auto".into(),
+            psiphon_aggressive: false,
+            ech_enabled: false,
+            ech_config: String::new(),
+            front_enabled: false,
+            front_host: String::new(),
         }
     }
 }

@@ -126,11 +126,24 @@ pub fn build_outbound(settings: &Settings, server: &ServerProfile) -> Value {
     // keeping the TLS SNI / Host header identical to the original config.
     let mut address = server.address.clone();
     let mut host_hdr = server.host.clone();
+    let mut sni_override: Option<String> = None;
     if settings.cdn_mode == "manual" && !settings.cdn_ip.is_empty() && is_domain(&server.address) {
         if host_hdr.is_empty() {
             host_hdr = server.address.clone();
         }
         address = settings.cdn_ip.clone();
+    }
+    // Domain fronting (fake host): connect to the CDN domain instead, keep the
+    // real destination in the Host header and present the CDN domain as SNI.
+    if settings.front_enabled
+        && !settings.front_host.trim().is_empty()
+        && is_domain(&address)
+    {
+        if host_hdr.is_empty() {
+            host_hdr = server.address.clone();
+        }
+        address = settings.front_host.trim().to_string();
+        sni_override = settings.front_host.trim().to_string().into();
     }
 
     let protocol = match server.protocol.as_str() {
@@ -190,7 +203,7 @@ pub fn build_outbound(settings: &Settings, server: &ServerProfile) -> Value {
         settings_obj["mux"] = json!({"enabled": true, "concurrency": 8});
     }
 
-    let stream = build_stream(settings, server, &host_hdr);
+    let stream = build_stream(settings, server, &host_hdr, sni_override.as_deref());
 
     let mut m = serde_json::Map::new();
     m.insert("tag".into(), json!("proxy"));
@@ -202,7 +215,7 @@ pub fn build_outbound(settings: &Settings, server: &ServerProfile) -> Value {
     Value::Object(m)
 }
 
-fn build_stream(settings: &Settings, server: &ServerProfile, host_hdr: &str) -> Value {
+fn build_stream(settings: &Settings, server: &ServerProfile, host_hdr: &str, sni_override: Option<&str>) -> Value {
     let supported = ["tcp", "ws", "kcp", "grpc", "httpupgrade", "h2", "quic"];
     let net_raw = if server.net.is_empty() { "tcp" } else { server.net.as_str() };
     let network = if supported.contains(&net_raw) { net_raw } else { "tcp" };
@@ -211,13 +224,16 @@ fn build_stream(settings: &Settings, server: &ServerProfile, host_hdr: &str) -> 
 
     let has_tls_security = !server.security.is_empty() && server.security != "none";
     if has_tls_security {
-        let sni = if !server.sni.is_empty() {
+        let mut sni = if !server.sni.is_empty() {
             server.sni.clone()
         } else if !host_hdr.is_empty() {
             host_hdr.to_string()
         } else {
             server.address.clone()
         };
+        if let Some(front) = sni_override {
+            sni = front.to_string();
+        }
         let mut t = serde_json::Map::new();
         t.insert("serverName".into(), json!(sni));
         t.insert("allowInsecure".into(), json!(settings.allow_insecure));
@@ -228,6 +244,15 @@ fn build_stream(settings: &Settings, server: &ServerProfile, host_hdr: &str) -> 
             t.insert("publicKey".into(), json!(server.pbk));
             t.insert("shortId".into(), json!(server.sid));
             t.insert("spiderX".into(), json!(server.spx));
+        } else if settings.ech_enabled {
+            // Encrypted Client Hello (Xray v25+): base64 ECHConfigList, or an
+            // https:// DoH URL from which the core fetches the HTTPS record.
+            let conf = if settings.ech_config.trim().is_empty() {
+                "https://1.1.1.1/dns-query"
+            } else {
+                settings.ech_config.trim()
+            };
+            t.insert("echConfigList".into(), json!(conf));
         }
         if settings.fragment_enabled {
             t.insert("fragment".into(), json!({

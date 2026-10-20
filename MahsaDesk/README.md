@@ -39,6 +39,28 @@ configs to help others reach a free internet.
 - **Persian (RTL) and English** interface
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+## New in v0.3
+
+- **Psiphon only / Psiphon after** - the Psiphon tunnel engine (`psiphon-tunnel-core.exe`,
+  same engine MahsaNG embeds on Android) runs as the standalone local tunnel in "only"
+  mode, or chains on top of the active config in "after" mode (traffic: app → Psiphon →
+  your config). Egress country, protocol family (normal / conduit-inproxy), aggressive
+  mode and local ports are configurable; an optional user base config is read from
+  `psiphon-user.json` in the app data folder. Drop `psiphon-tunnel-core.exe` from the
+  Psiphon-Labs builds next to `xray.exe`.
+- **DNS scanner** (Tools) - queries the same domain through the system resolver, Google,
+  Cloudflare, Quad9, Shecan, 403.online, Radar, Electro, Begzar and two DoH references;
+  shows latency and flags answers that differ from the DoH truth (filtering detection)
+- **Mahsa IP scanner** (Tools) - TCP-probes candidate CDN IPs on the chosen port from
+  preset Cloudflare/Google/DigitalOcean blocks or your own IP/CIDR list, and one click
+  pushes the fastest working IP into the CDN address-rewrite setting
+- **Network tools** (Tools) - ping, traceroute, DNS lookup, TCP port check, "what is my
+  IP" (with geo/ISP info) and a download speed test
+- **Encrypted Client Hello (ECH)** - switch in settings; injects
+  `streamSettings.tlsSettings.echConfigList` for the Xray core (auto via DoH when empty)
+- **Domain fronting (fake host)** - connects to a fronting CDN domain while the real
+  destination stays in the Host header and the CDN is presented as SNI
+
 ## What stays out (by design)
 
 MahsaNG's donated-config service depends on closed-source parts (config encryption and

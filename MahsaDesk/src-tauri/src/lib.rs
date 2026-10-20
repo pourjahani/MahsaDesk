@@ -1,9 +1,11 @@
 pub mod config_gen;
 pub mod core;
+pub mod psiphon;
 pub mod servers;
 pub mod settings;
 pub mod subs;
 pub mod sysproxy;
+pub mod tools;
 pub mod tun;
 
 use base64::engine::general_purpose::STANDARD;
@@ -30,6 +32,8 @@ use subs::{Subscription, SubsFile};
 enum Mode {
     SystemProxy,
     Tun,
+    PsiphonOnly,
+    PsiphonAfter,
 }
 
 struct AppState {
@@ -38,6 +42,7 @@ struct AppState {
     subs: SubsFile,
     mode: Option<Mode>,
     core_handle: Option<core::CoreHandle>,
+    psiphon_child: Option<std::process::Child>,
     logs: Arc<Mutex<VecDeque<String>>>,
 }
 
@@ -78,12 +83,20 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
     if let Some(handle) = st.core_handle.take() {
         handle.shutdown();
     }
+    if let Some(mut child) = st.psiphon_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     if st.mode.take().is_some() {
         let _ = sysproxy::disable_system_proxy();
     }
     // best-effort cleanup of a running elevated sing-box (experimental TUN)
     let _ = Command::new("taskkill")
         .args(["/IM", "sing-box.exe", "/F"])
+        .output();
+    // and a leftover psiphon tunnel-core (e.g. crashed parent)
+    let _ = Command::new("taskkill")
+        .args(["/IM", psiphon::EXE_NAME, "/F"])
         .output();
     Ok(())
 }
@@ -97,13 +110,45 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
         (g.settings.clone(), g.servers.clone(), g.logs.clone())
     };
 
+    // ---- Psiphon only: the tunnel-core engine runs alone, no xray core ----
+    if mode == Mode::PsiphonOnly {
+        let _ = disconnect(app);
+        let bin_dir = app
+            .path()
+            .resolve("binaries", tauri::path::BaseDirectory::Resource)
+            .map_err(|e| e.to_string())?;
+        let exe = bin_dir.join(psiphon::EXE_NAME);
+        if !exe.exists() {
+            return Err(format!(
+                "{} not found in app binaries folder (place it next to xray.exe)",
+                psiphon::EXE_NAME
+            ));
+        }
+        let workdir = dir.join("psiphon");
+        let _ = std::fs::create_dir_all(&workdir);
+        // optional user-supplied base config from their own provider
+        let base_cfg = dir.join("psiphon-user.json");
+        let cfg = psiphon::build_config(&settings, None, &workdir, &base_cfg);
+        let mut child = psiphon::spawn_tunnel(&exe, &workdir, &cfg, &logs, app)?;
+        if psiphon::wait_for_socks(settings.psiphon_socks_port).is_err() {
+            let _ = child.kill();
+            return Err("Psiphon tunnel did not come up in time (see logs)".into());
+        }
+        sysproxy::enable_system_proxy(settings.psiphon_http_port)?;
+        let arc = state(&app.state::<ManagedState>());
+        let mut g = arc.lock().unwrap();
+        g.psiphon_child = Some(child);
+        g.mode = Some(mode);
+        return Ok(());
+    }
+
     let (_, server) = servers
         .iter()
         .map(|p| (p.id.clone(), clone_profile(p)))
         .find(|(id, _)| *id == settings.active_server)
         .ok_or_else(|| "no active server selected".to_string())?;
 
-    if server.protocol == "hysteria2" && mode == Mode::SystemProxy {
+    if server.protocol == "hysteria2" && (mode == Mode::SystemProxy || mode == Mode::PsiphonAfter) {
         return Err(
             "hysteria2 profiles need TUN mode (sing-box handles them natively)".into(),
         );
@@ -139,6 +184,30 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
         Mode::SystemProxy => {
             sysproxy::enable_system_proxy(settings.http_port)?;
         }
+        Mode::PsiphonAfter => {
+            // xray keeps running for the inner leg; psiphon sits on top of it
+            let exe = bin_dir.join(psiphon::EXE_NAME);
+            if !exe.exists() {
+                let _ = handle.shutdown();
+                let _ = disconnect(app);
+                return Err(format!(
+                    "{} not found in app binaries folder (place it next to xray.exe)",
+                    psiphon::EXE_NAME
+                ));
+            }
+            let workdir = dir.join("psiphon");
+            let _ = std::fs::create_dir_all(&workdir);
+            let base_cfg = dir.join("psiphon-user.json");
+            let cfg = psiphon::build_config(&settings, Some(settings.socks_port), &workdir, &base_cfg);
+            let mut child = psiphon::spawn_tunnel(&exe, &workdir, &cfg, &logs, app)?;
+            if psiphon::wait_for_socks(settings.psiphon_socks_port).is_err() {
+                let _ = child.kill();
+                return Err("Psiphon tunnel did not come up in time (see logs)".into());
+            }
+            sysproxy::enable_system_proxy(settings.psiphon_http_port)?;
+            g.psiphon_child = Some(child);
+        }
+        Mode::PsiphonOnly => { unreachable!("handled above") }
         Mode::Tun => {
             let singbox = bin_dir.join("sing-box.exe");
             if !singbox.exists() {
@@ -197,6 +266,7 @@ struct StatusInfo {
     running: bool,
     mode: Option<String>,
     active: Option<String>,
+    psiphon_running: bool,
 }
 
 #[tauri::command]
@@ -538,8 +608,11 @@ fn status(st: State<ManagedState>) -> StatusInfo {
         mode: g.mode.as_ref().map(|m| match m {
             Mode::SystemProxy => "system".into(),
             Mode::Tun => "tun".into(),
+            Mode::PsiphonOnly => "psiphon-only".into(),
+            Mode::PsiphonAfter => "psiphon-after".into(),
         }),
         active: Some(g.settings.active_server.clone()),
+        psiphon_running: g.psiphon_child.is_some(),
     }
 }
 
@@ -782,6 +855,57 @@ fn validate_servers_config(app: AppHandle, st: State<ManagedState>) -> Result<()
 }
 
 #[tauri::command]
+async fn dns_scan_cmd(domain: String) -> Vec<tools::DnsResult> {
+    tools::dns_scan(&domain).await
+}
+
+#[tauri::command]
+async fn ip_scan_cmd(preset: String, custom: String, port: u16) -> Vec<tools::IpResult> {
+    tauri::async_runtime::spawn_blocking(move || tools::ip_scan(&preset, &custom, port))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn net_tool_cmd(kind: String, host: String) -> tools::NetToolOutput {
+    let fallback = tools::NetToolOutput {
+        ok: false,
+        detail: "task failed".into(),
+    };
+    tauri::async_runtime::spawn_blocking(move || match kind.as_str() {
+        "trace" => tools::net_traceroute(&host),
+        "dns" => tools::net_dns_lookup(&host),
+        _ => tools::net_ping(&host),
+    })
+    .await
+    .unwrap_or(fallback)
+}
+
+#[tauri::command]
+async fn port_check_cmd(host: String, port: u16) -> tools::PortCheckResult {
+    tauri::async_runtime::spawn_blocking(move || tools::net_port_check(&host, port))
+        .await
+        .unwrap_or(tools::PortCheckResult {
+            open: false,
+            delay: None,
+        })
+}
+
+#[tauri::command]
+async fn my_ip_cmd() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || tools::my_ip_info())
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+}
+
+#[tauri::command]
+async fn net_speed_cmd(bytes: u64) -> Result<f64, String> {
+    tauri::async_runtime::spawn_blocking(move || tools::net_speed_test(bytes))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+}
+
+#[tauri::command]
 fn list_running_processes() -> Vec<String> {
     core::list_processes()
 }
@@ -926,6 +1050,7 @@ pub fn run() {
                 subs,
                 mode: None,
                 core_handle: None,
+                psiphon_child: None,
                 logs: logs.clone(),
             }))));
 
@@ -999,7 +1124,13 @@ pub fn run() {
             validate_servers_config,
             list_running_processes,
             assets_info,
-            delete_geo
+            delete_geo,
+            dns_scan_cmd,
+            ip_scan_cmd,
+            net_tool_cmd,
+            port_check_cmd,
+            my_ip_cmd,
+            net_speed_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
