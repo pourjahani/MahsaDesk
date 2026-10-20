@@ -1,6 +1,7 @@
 pub mod config_gen;
 pub mod core;
 pub mod psiphon;
+pub mod requirements;
 pub mod servers;
 pub mod settings;
 pub mod subs;
@@ -23,6 +24,15 @@ use tauri::{AppHandle, Manager, State};
 use servers::ServerProfile;
 use settings::Settings;
 use subs::{Subscription, SubsFile};
+
+fn binaries_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .resolve("binaries", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
 
 // ---------------------------------------------------------------------------
 // App state
@@ -906,6 +916,29 @@ async fn net_speed_cmd(bytes: u64) -> Result<f64, String> {
 }
 
 #[tauri::command]
+async fn requirements_status(app: AppHandle) -> Vec<requirements::ReqInfo> {
+    match binaries_dir(&app) {
+        Ok(dir) => requirements::status_all(&dir, true).await,
+        Err(_) => Vec::new(),
+    }
+}
+
+#[tauri::command]
+async fn requirements_upgrade(app: AppHandle, key: String) -> Result<requirements::ReqInfo, String> {
+    // engine files are locked while the cores run -> refuse politely
+    let running = {
+        let arc = state(&app.state::<ManagedState>());
+        let g = arc.lock().unwrap();
+        g.core_handle.is_some() || g.psiphon_child.is_some()
+    };
+    if running {
+        return Err("disconnect MahsaDesk before updating engine files".into());
+    }
+    let dir = binaries_dir(&app)?;
+    requirements::upgrade(&dir, &key).await
+}
+
+#[tauri::command]
 fn list_running_processes() -> Vec<String> {
     core::list_processes()
 }
@@ -1130,7 +1163,9 @@ pub fn run() {
             net_tool_cmd,
             port_check_cmd,
             my_ip_cmd,
-            net_speed_cmd
+            net_speed_cmd,
+            requirements_status,
+            requirements_upgrade
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

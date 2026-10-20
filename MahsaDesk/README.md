@@ -61,6 +61,16 @@ configs to help others reach a free internet.
 - **Domain fronting (fake host)** - connects to a fronting CDN domain while the real
   destination stays in the Host header and the CDN is presented as SNI
 
+## New in v0.3.1
+
+- **Light / dark / auto theme** selection in settings; `auto` follows the OS color scheme
+- **Requirements manager** - a settings card checks every engine requirement (Xray,
+  sing-box, wintun, geo data, Psiphon engine) against upstream, shows versions, and
+  upgrades them in place from inside the app
+- **Complete builds** - the installer and portable zip now bundle every runtime
+  requirement, including `psiphon-tunnel-core.exe` (official Psiphon-Labs binary), so
+  Psiphon works with zero manual steps
+
 ## What stays out (by design)
 
 MahsaNG's donated-config service depends on closed-source parts (config encryption and

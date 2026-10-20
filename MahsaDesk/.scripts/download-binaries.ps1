@@ -40,5 +40,16 @@ Copy-Item $sexe.FullName -Destination (Join-Path $OutDir "sing-box.exe") -Force
 $wt = Get-ChildItem $singDir -Recurse -Filter "wintun.dll" | Where-Object { $_.Length -gt 100000 } | Select-Object -First 1
 if ($wt) { Copy-Item $wt.FullName -Destination (Join-Path $OutDir "wintun.dll") -Force }
 
+# 3. Psiphon tunnel engine - official Psiphon-Labs release-candidate binary
+#    (rolling branch, i686 build runs natively on x64 Windows via WoW64)
+$psiUrl = "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/windows/psiphon-tunnel-core-i686.exe"
+$psiDest = Join-Path $OutDir "psiphon-tunnel-core.exe"
+if (-not (Test-Path $psiDest) -or (Get-Item $psiDest).Length -lt 1MB) {
+  Write-Host "Downloading $psiUrl"
+  Invoke-WebRequest -UserAgent "MahsaDesk" -Uri $psiUrl -OutFile $psiDest
+} else {
+  Write-Host "psiphon-tunnel-core.exe already present, skipping"
+}
+
 Write-Host "`nBinaries in $OutDir :"
 Get-ChildItem $OutDir | Format-Table Name, Length

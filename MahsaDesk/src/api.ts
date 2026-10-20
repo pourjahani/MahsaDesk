@@ -41,6 +41,7 @@ export interface Subscription {
 
 export interface Settings {
   language: string;
+  theme: string;
   socks_port: number;
   http_port: number;
   loglevel: string;
@@ -126,7 +127,21 @@ export const api = {
     invoke<PortCheckResult>("port_check_cmd", { host, port }),
   myIp: () => invoke<Record<string, string>>("my_ip_cmd"),
   netSpeed: (bytes: number) => invoke<number>("net_speed_cmd", { bytes }),
+  requirementsStatus: () =>
+    invoke<ReqInfo[]>("requirements_status"),
+  requirementsUpgrade: (key: string) =>
+    invoke<ReqInfo>("requirements_upgrade", { key }),
 };
+
+export interface ReqInfo {
+  key: string;
+  title: string;
+  exists: boolean;
+  size: number;
+  installed_version: string | null;
+  available_version: string | null;
+  update_available: boolean;
+}
 
 export interface DnsResult {
   server: string;

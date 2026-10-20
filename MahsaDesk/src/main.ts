@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +59,32 @@ async function refreshData() {
   settings = await api.getSettings();
   servers = await api.listServers();
   subs = await api.listSubscriptions();
+}
+
+// ---------------------------------------------------------------------------
+// theme (light / dark / auto)
+// ---------------------------------------------------------------------------
+
+let themeMouseListener: ((e: MediaQueryListEvent) => void) | null = null;
+
+function applyTheme(theme: string | undefined) {
+  const root = document.documentElement;
+  const pref = window.matchMedia("(prefers-color-scheme: dark)");
+  const setClass = (dark: boolean) => root.classList.toggle("dark", dark);
+  if (themeMouseListener) {
+    pref.removeEventListener("change", themeMouseListener);
+    themeMouseListener = null;
+  }
+  if (theme === "dark") {
+    setClass(true);
+  } else if (theme === "light") {
+    setClass(false);
+  } else {
+    // auto: follow the OS color scheme
+    setClass(pref.matches);
+    themeMouseListener = (e) => setClass(e.matches);
+    pref.addEventListener("change", themeMouseListener);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +750,77 @@ async function save(patch: Partial<Settings>) {
 }
 
 // ---------------------------------------------------------------------------
+// requirements card (check + upgrade engines)
+// ---------------------------------------------------------------------------
+
+async function renderRequirementsCard(wrap: HTMLElement) {
+  const card = el("div", "card");
+  card.append(el("h2", "", t("requirements.title")));
+  card.append(el("p", "muted", t("requirements.note")));
+  const checkRow = el("div", "actions");
+  const checkBtn = el("button", "btn primary", t("requirements.check"));
+  checkRow.append(checkBtn);
+  card.append(checkRow);
+  const list = el("div", "lines") as HTMLElement;
+  card.append(list);
+  wrap.append(card);
+
+  const paint = (items: ReqInfo[]) => {
+    list.innerHTML = "";
+    for (const it of items) {
+      const row = el("div", "switch-row");
+      row.append(el("span", "", it.title));
+      const right = el("div", "srv-actions");
+      right.append(
+        el("span", `badge ${it.exists ? "ok" : "fail"}`, it.exists ? t("requirements.ok") : t("requirements.missing"))
+      );
+      if (it.exists && it.installed_version) {
+        right.append(el("span", "badge", `${t("requirements.version")} ${it.installed_version.slice(0, 40)}`));
+      }
+      if (it.available_version && it.update_available) {
+        right.append(el("span", "badge mid", t("requirements.updateFound")));
+      }
+      if (it.exists) {
+        right.append(el("span", "badge", fmtBytes(it.size)));
+      }
+      const btn = el("button", "btn", it.exists ? t("requirements.upgrade") : t("requirements.upgrade"));
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = t("requirements.updating");
+        try {
+          await api.requirementsUpgrade(it.key);
+          paint(await api.requirementsStatus());
+        } catch (e: any) {
+          alert(`${t("error")}: ${e}`);
+          btn.disabled = false;
+          btn.textContent = t("requirements.upgrade");
+        }
+      };
+      right.append(btn);
+      row.append(right);
+      list.append(row);
+    }
+    checkBtn.disabled = false;
+    checkBtn.textContent = t("requirements.check");
+  };
+
+  const runCheck = async () => {
+    checkBtn.disabled = true;
+    checkBtn.textContent = t("requirements.checking");
+    try {
+      paint(await api.requirementsStatus());
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+      checkBtn.disabled = false;
+      checkBtn.textContent = t("requirements.check");
+    }
+  };
+  checkBtn.onclick = () => runCheck();
+  // initial status fetch (local presence + remote versions)
+  runCheck();
+}
+
+// ---------------------------------------------------------------------------
 // per-app proxy view (effective in TUN mode)
 // ---------------------------------------------------------------------------
 
@@ -1307,6 +1404,19 @@ function renderSettings() {
   ];
   general.append(mkSelect(t("settings.language"), "language", langOptions));
   general.append(
+    (() => {
+      const f = mkSelect(t("settings.theme"), "theme", [
+        ["auto", t("settings.themeAuto")],
+        ["light", t("settings.themeLight")],
+        ["dark", t("settings.themeDark")],
+      ]);
+      // mkSelect only persists; apply the theme immediately too
+      const sel = f.querySelector("select") as HTMLSelectElement;
+      sel.addEventListener("change", () => applyTheme(sel.value));
+      return f;
+    })()
+  );
+  general.append(
     mkSwitch(t("settings.minimizeTray"), "minimize_to_tray"),
     mkSwitch(t("settings.autoConnect"), "auto_connect")
   );
@@ -1386,6 +1496,8 @@ function renderSettings() {
   );
   pCard.append(pGrid);
   wrap.append(pCard);
+
+  renderRequirementsCard(wrap);
 
   wrap.append(el("p", "muted", t("settings.danger")));
   mainEl.append(wrap);
@@ -1553,6 +1665,8 @@ async function init() {
     setLang(settings.language as Lang);
     localStorage.setItem("mahsa-lang", settings.language);
   }
+  // apply the persisted theme before first paint of the layout
+  applyTheme(settings?.theme);
   buildLayout();
   renderView();
   updateStatus();

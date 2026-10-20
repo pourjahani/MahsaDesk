@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Settings {
     pub language: String,        // "en" | "fa"
+    pub theme: String,           // "auto" | "light" | "dark"
     pub socks_port: u16,         // default 10808
     pub http_port: u16,          // default 10809
     pub loglevel: String,        // debug|info|warning|error|none
@@ -52,6 +53,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             language: "en".into(),
+            theme: "auto".into(),
             socks_port: 10808,
             http_port: 10809,
             loglevel: "warning".into(),

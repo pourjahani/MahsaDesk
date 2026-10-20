@@ -1,6 +1,6 @@
 [package]
 name = "mahsadesk"
-version = "0.3.0"
+version = "0.3.1"
 description = "MahsaDesk - free v2ray/xray client for Windows"
 authors = ["MahsaDesk"]
 edition = "2021"
@@ -21,6 +21,7 @@ serde_json = "1"
 base64 = "0.22"
 sysproxy = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "socks", "json"] }
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 urlencoding = "2"
 rand = "0.8"
 
