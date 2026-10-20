@@ -61,6 +61,14 @@ configs to help others reach a free internet.
 - **Domain fronting (fake host)** - connects to a fronting CDN domain while the real
   destination stays in the Host header and the CDN is presented as SNI
 
+## New in v0.3.2
+
+- **Startup update check** - on every launch the app silently compares its version
+  against the GitHub release feed and, when a newer MahsaDesk exists, shows a banner
+  with a direct installer download link (EN + FA)
+- **Green/red switch colors** - all on/off switches and the connection status dot now
+  use fixed brand colors (#01ca7a on / #f03b4c off) in both themes
+
 ## New in v0.3.1
 
 - **Light / dark / auto theme** selection in settings; `auto` follows the OS color scheme

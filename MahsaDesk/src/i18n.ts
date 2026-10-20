@@ -135,6 +135,14 @@ export const DICT = {
       version: "Version",
       size: "Size",
     },
+    update: {
+      title: "MahsaDesk update available",
+      current: "Installed version",
+      latest: "Latest",
+      download: "Download installer",
+      release: "Open release page",
+      later: "Later",
+    },
     psiphon: {
       title: "Psiphon",
       note: "Runs the Psiphon tunnel engine the same way MahsaNG's Android Psiphon modes do. Place psiphon-tunnel-core.exe next to xray.exe in the app binaries folder.",
@@ -399,6 +407,14 @@ export const DICT = {
       connFirst: "پیش از به‌روزرسانی موتورها، اتصال مهسا دسک را قطع کنید.",
       version: "نسخه",
       size: "حجم",
+    },
+    update: {
+      title: "به‌روزرسانی MahsaDesk موجود است",
+      current: "نسخه نصب‌شده",
+      latest: "آخرین",
+      download: "دانلود نصب‌کننده",
+      release: "بازکردن صفحه انتشار",
+      later: "بعداً",
     },
     psiphon: {
       title: "سایفون",

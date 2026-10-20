@@ -19,6 +19,8 @@ const PSIPHON_BASE_URL: &str =
     "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/windows/psiphon-tunnel-core-i686.exe";
 const PSIPHON_SHA_URL: &str =
     "https://api.github.com/repos/Psiphon-Labs/psiphon-tunnel-core-binaries/contents/windows/psiphon-tunnel-core-i686.exe";
+/// This app's own release feed: startup update check + download link.
+const APP_REPO: &str = "pourjahani/MahsaDesk";
 
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
@@ -339,4 +341,171 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
         }
     }
     Ok(check_requirement(dir, key, false).await)
+}
+
+// ---------------------------------------------------------------------------
+// Self-update check (same pattern as the requirements card)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+pub struct AppUpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    /// Direct installer asset URL, or "" when the release has none.
+    pub download_url: String,
+    /// Human release / download page.
+    pub release_url: String,
+}
+
+/// True when semver-ish `a` is strictly newer than `b` (numeric part compare,
+/// string fallback for odd tags like "1.2.3-rc.1").
+fn is_newer(a: &str, b: &str) -> bool {
+    let nums = |s: &str| -> Vec<(u64, String)> {
+        s.trim_start_matches('v')
+            .split(|c| c == '.' || c == '-')
+            .map(|p| (
+                p.parse::<u64>().unwrap_or(0),
+                p.to_string(),
+            ))
+            .collect()
+    };
+    let (a, b) = (nums(a), nums(b));
+    for i in 0..a.len().max(b.len()) {
+        let av = a.get(i);
+        let bv = b.get(i);
+        match (av, bv) {
+            (Some(x), Some(y)) => {
+                if x.0 != y.0 {
+                    return x.0 > y.0;
+                }
+                if x.1 != y.1 {
+                    // suffix compare: a numeric part beats a textual one
+                    // (1.2 > 1.2-rc); textual vs textual is alphabetical best-effort
+                    let x_num = x.1.parse::<u64>().is_ok();
+                    let y_num = y.1.parse::<u64>().is_ok();
+                    return match (x_num, y_num) {
+                        (true, false) => true,
+                        (false, true) => false,
+                        _ => *x.1 > *y.1,
+                    };
+                }
+            }
+            // a plain release tag (numeric extras) beats a shorter prefix,
+            // but a textual extra like "-rc.1" is a prerelease -> older
+            (Some(x), None) => return x.1.parse::<u64>().is_ok(),
+            // a textual extra on the other side means THAT one is the prerelease
+            (None, Some(y)) => return !y.1.parse::<u64>().is_ok(),
+            (None, None) => {}
+        }
+    }
+    false
+}
+
+/// Check GitHub for a newer MahsaDesk release than the running build and
+/// resolve a direct installer download URL from the release assets.
+pub async fn check_app_update(current: &str) -> AppUpdateInfo {
+    let current = current.trim().trim_start_matches('v').to_string();
+    let release_url = format!("https://github.com/{}/releases/latest", APP_REPO);
+    let url = format!("https://api.github.com/repos/{}/releases/latest", APP_REPO);
+    let fallback = AppUpdateInfo {
+        current_version: current.clone(),
+        latest_version: current.clone(),
+        update_available: false,
+        download_url: String::new(),
+        release_url: release_url.clone(),
+    };
+    let rel: serde_json::Value = match http().get(&url).send().await {
+        Ok(r) => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return fallback,
+        },
+        Err(_) => return fallback,
+    };
+    let tag = rel
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    if tag.is_empty() {
+        return fallback;
+    }
+    // pick the NSIS installer first, then any windows .exe asset
+    let mut download_url = String::new();
+    if let Some(assets) = rel.get("assets").and_then(|a| a.as_array()) {
+        let pick = |pred: &dyn Fn(&str) -> bool| -> Option<String> {
+            assets
+                .iter()
+                .filter_map(|a| {
+                    let name = a.get("name").and_then(|n| n.as_str())?;
+                    let url = a.get("browser_download_url").and_then(|u| u.as_str())?;
+                    Some((name, url))
+                })
+                .find(|(n, _)| pred(n))
+                .map(|(_, u)| u.to_string())
+        };
+        download_url = pick(&|n| {
+            n.contains("setup") && n.ends_with(".exe")
+        })
+            .or_else(|| pick(&|n| n.contains("x64") && n.ends_with(".exe")))
+            .or_else(|| {
+                pick(&|n| {
+                    n.ends_with(".exe")
+                        && !n.contains("portable")
+                        && !n.contains("msi")
+                })
+            })
+            .unwrap_or_default();
+    }
+    let url_boxed = download_url.clone();
+    let release_page = rel
+        .get("html_url")
+        .and_then(|u| u.as_str())
+        .unwrap_or(&release_url)
+        .to_string();
+    AppUpdateInfo {
+        update_available: is_newer(&tag, &current),
+        latest_version: tag,
+        download_url: url_boxed,
+        release_url: release_page,
+        ..fallback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newer_patches_and_minors() {
+        assert!(is_newer("0.3.2", "0.3.1"));
+        assert!(is_newer("0.4.0", "0.3.9"));
+        assert!(is_newer("1.0.0", "0.9.99"));
+    }
+
+    #[test]
+    fn same_and_older_not_flagged() {
+        assert!(!is_newer("0.3.1", "0.3.1"));
+        assert!(!is_newer("0.3.0", "0.3.1"));
+    }
+
+    #[test]
+    fn v_prefix_and_dangling_parts() {
+        assert!(is_newer("v0.4.0", "0.3.1"));
+        assert!(is_newer("0.4", "0.3"));
+        assert!(!is_newer("0.3", "0.3.1"));
+    }
+
+    #[test]
+    fn odd_suffixes_fall_back_to_string_compare() {
+        assert!(is_newer("0.3.2", "0.3.1-beta"));
+        assert!(!is_newer("0.3.1-alpha", "0.3.1"));
+    }
+
+    #[test]
+    fn release_beats_prerelease_of_same_version() {
+        assert!(is_newer("0.3.1", "0.3.1-rc2"));
+        assert!(!is_newer("0.3.1-rc1", "0.3.1"));
+    }
 }

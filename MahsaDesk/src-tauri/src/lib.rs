@@ -939,6 +939,11 @@ async fn requirements_upgrade(app: AppHandle, key: String) -> Result<requirement
 }
 
 #[tauri::command]
+async fn app_update_check() -> requirements::AppUpdateInfo {
+    requirements::check_app_update(env!("CARGO_PKG_VERSION")).await
+}
+
+#[tauri::command]
 fn list_running_processes() -> Vec<String> {
     core::list_processes()
 }
@@ -1165,7 +1170,8 @@ pub fn run() {
             my_ip_cmd,
             net_speed_cmd,
             requirements_status,
-            requirements_upgrade
+            requirements_upgrade,
+            app_update_check
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

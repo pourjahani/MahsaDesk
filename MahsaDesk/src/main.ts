@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,10 @@ function fmtBytes(n: number): string {
 let settings: Settings | null = null;
 let servers: ServerProfile[] = [];
 let subs: Subscription[] = [];
+
+// startup release check (same pattern as the requirements card)
+let updateInfo: AppUpdateInfo | null = null;
+let updateDismissed = false;
 
 async function refreshData() {
   settings = await api.getSettings();
@@ -176,8 +180,61 @@ function switchView(v: string) {
   renderView();
 }
 
+// ---------------------------------------------------------------------------
+// new-release banner (startup check, requirements-card pattern)
+// ---------------------------------------------------------------------------
+
+function openExternal(url: string) {
+  // @ts-ignore injected by withGlobalTauri
+  window.__TAURI__?.opener?.openUrl?.(url);
+  if (!(window as any).__TAURI__) window.open(url, "_blank");
+}
+
+function buildUpdateBanner(): HTMLElement {
+  const info = updateInfo!;
+  const card = el("div", "card update-banner");
+  card.append(
+    el("h2", "", t("update.title")),
+    el("p", "", `${t("update.current")}: ${info.current_version}  ->  ${t("update.latest")}: ${info.latest_version}`)
+  );
+  const actions = el("div", "actions");
+  if (info.download_url) {
+    const dl = el("button", "btn primary", t("update.download"));
+    dl.onclick = () => openExternal(info.download_url);
+    actions.append(dl);
+  }
+  const page = el("button", "btn", t("update.release"));
+  page.onclick = () => openExternal(info.release_url);
+  actions.append(page);
+  const later = el("button", "btn ghost", t("update.later"));
+  later.onclick = () => {
+    updateDismissed = true;
+    card.remove();
+  };
+  actions.append(later);
+  card.append(actions);
+  return card;
+}
+
+async function checkAppUpdateOnBoot() {
+  try {
+    const info = await api.appUpdateCheck();
+    if (info.update_available && !updateDismissed) {
+      updateInfo = info;
+      if (mainEl) renderView();
+    } else {
+      updateInfo = info.update_available ? info : null;
+    }
+  } catch {
+    // offline / rate-limited: stay silent
+  }
+}
+
 function renderView() {
   mainEl.innerHTML = "";
+  if (updateInfo?.update_available && !updateDismissed) {
+    mainEl.append(buildUpdateBanner());
+  }
   switch (currentView) {
     case "servers": renderServers(); break;
     case "subs": renderSubs(); break;
@@ -1671,6 +1728,8 @@ async function init() {
   renderView();
   updateStatus();
   listenTraffic();
+  // release check after first paint so it never delays startup
+  setTimeout(checkAppUpdateOnBoot, 1500);
   setInterval(updateStatus, 4000);
   setInterval(async () => {
     await refreshData();

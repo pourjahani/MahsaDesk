@@ -131,7 +131,16 @@ export const api = {
     invoke<ReqInfo[]>("requirements_status"),
   requirementsUpgrade: (key: string) =>
     invoke<ReqInfo>("requirements_upgrade", { key }),
+  appUpdateCheck: () => invoke<AppUpdateInfo>("app_update_check"),
 };
+
+export interface AppUpdateInfo {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  download_url: string;
+  release_url: string;
+}
 
 export interface ReqInfo {
   key: string;

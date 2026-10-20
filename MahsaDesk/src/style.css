@@ -164,12 +164,12 @@ html[dir="rtl"] body {
 }
 
 .dot.on {
-  background: #4a7d45;
-  box-shadow: 0 0 0 3px rgba(74, 125, 69, 0.15);
+  background: #01ca7a;
+  box-shadow: 0 0 0 3px rgba(1, 202, 122, 0.15);
 }
 
 .dot.off {
-  background: #c9c8c4;
+  background: #f03b4c;
 }
 
 .status-label {
@@ -187,6 +187,20 @@ html[dir="rtl"] body {
   font-size: 11.5px;
   color: var(--muted);
   min-height: 16px;
+}
+
+/* --- update banner --- */
+.update-banner {
+  border-color: #01ca7a;
+  border-width: 1.5px;
+  margin-bottom: 14px;
+}
+
+.update-banner h2 {
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* --- buttons --- */
@@ -382,8 +396,8 @@ textarea.lines {
   width: 38px;
   height: 21px;
   border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: 1px solid transparent;
+  background: #f03b4c;
   position: relative;
   cursor: pointer;
   transition: background 140ms ease;
@@ -403,8 +417,8 @@ textarea.lines {
 }
 
 .switch.on {
-  background: var(--text);
-  border-color: var(--text);
+  background: #01ca7a;
+  border-color: #01ca7a;
 }
 
 .switch.on::after {
