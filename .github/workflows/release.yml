@@ -40,21 +40,25 @@ jobs:
       - name: Create portable exe
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "MahsaDesk/src-tauri/target/release/MahsaDesk.exe" | Select-Object -First 1
+          # Tauri names the binary after the Rust crate (mahsadesk.exe), not the product name
+          $exe = Get-ChildItem "MahsaDesk/src-tauri/target/release/mahsadesk.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "portable exe not found"; exit 1 }
           $stage = ".release"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item $exe.FullName "$stage/MahsaDeskPortable.exe"
           # portable: binaries travel in a folder next to the exe
           Copy-Item "MahsaDesk/src-tauri/binaries" "$stage/binaries" -Recurse
           Compress-Archive -Path "$stage/MahsaDeskPortable.exe", "$stage/binaries" -DestinationPath "MahsaDeskPort.win.zip" -Force
-          # installer artifact from NSIS bundle
-          $nsis = Get-ChildItem "MahsaDesk/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          if ($nsis) { Copy-Item $nsis.FullName "MahsaDeskSetup_v0.1.exe" }
+          # installer artifact from NSIS bundle, renamed with the current version
+          $ver = (Get-Content "MahsaDesk/package.json" | ConvertFrom-Json).version
+          $nsis = Get-ChildItem "MahsaDesk/src-tauri/target/release/bundle/nsis/MahsaDesk_*.exe" | Select-Object -First 1
+          if (-not $nsis) { Write-Error "NSIS installer not found"; exit 1 }
+          Copy-Item $nsis.FullName "MahsaDeskSetup_v$ver.exe"
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             MahsaDeskPort.win.zip
-            MahsaDeskSetup_v0.1.exe
+            MahsaDeskSetup_v*.exe
           generate_release_notes: true
