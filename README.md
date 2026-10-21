@@ -1,38 +1,57 @@
 # MahsaNG
-- [Download Mahsa NG vpn from google playstore](https://play.google.com/store/apps/details?id=com.MahsaNet.MahsaNG)
-- [ MahsaNG VPN دانلود آخرین نسخه از گیتهاب](https://github.com/GFW-knocker/MahsaNG/releases/latest)
-- [mahsa_net telegram channel](https://t.me/mahsa_net)
-- MahsaNG is a v2rayNG client aimed to provide free vpn for everyone<br>
-<img src="https://github.com/GFW-knocker/MahsaNG/blob/master/Mahsa_logo.jpg?raw=true" width="480" ><br>
 
+**A free VPN for everyone, powered by its community.**
 
-# What is the idea
-- MahsaNG is client-side of project [Segaro_Dream](https://github.com/GFW-knocker/Segaro_Dream)
-- MahsaNG is a decentralized non-profit vpn platform in which everyone can share their configs to help others
-- Donated configs continuously monitored and redistributed to users based on clients feedback in each subnet-ip
-- Our goal is to make a superior vpn platform which is free,stable,scalable,distributed & filter-resistant
+MahsaNG is a VPN app for Android and Windows. Instead of selling servers, the community shares unused server bandwidth — the app finds and connects you to the fastest working one automatically. No account, no payment.
 
-# Difference to v2rayNG
-- vpn providers can use ADS service to make income instead of direct sell
-- everyone can share their unused vps bandwidth to help others
-- prevent free configs to be stolen and reselled
-- Automatic report for refining config collection at central servers
-- DNS over HTTPS
-- TLS Fragmentor
-- HTTP & WS fake Host
-- Rotating Configs
-- Random Subdomain
-- & much more ...
+<img src="https://github.com/GFW-knocker/MahsaNG/blob/master/Mahsa_logo.jpg?raw=true" width="360" alt="MahsaNG logo" >
 
-# build from source
-- the code can NOT build standalone apk directly from source
-- some parts of source used for encrypting config is closed to prevent leakage & thus reselling of donated configs
-- classes responsible for authentication with [mahsa server](https://www.mahsaserver.com/) is also closed to prevent abusing of mahsa server
-- all other technology used to bypass filtering is willingly published in [Mahsa Xray-Core](https://github.com/GFW-knocker/Xray-core) including but not limited to Wireguard Noise, Youtube Direct , TLS & HTTPS & DoH fragmentor & fake Host
+## Download
 
-# build NikaNG from source
-- [NikaNG](https://github.com/mahsanet/NikaNG) is a fork of v2rayNG with [Mahsa Xray-core](https://github.com/GFW-knocker/Xray-core)
-- its fully open souce and it can build by github action or locally
-- if you are interested in Mahsa-core as a developer , NikaNG is for you.
-- you need to place [libv2ray.aar](https://github.com/GFW-knocker/AndroidLibXrayLite) in v2rayng/apps/libs folder before compile
+| Platform | Where |
+| --- | --- |
+| Android (Google Play) | [MahsaNG on Play Store](https://play.google.com/store/apps/details?id=com.MahsaNet.MahsaNG) |
+| Android (APK) | [Download latest release](https://github.com/GFW-knocker/MahsaNG/releases/latest) |
+| Windows (desktop app) | [MahsaDesk releases](https://github.com/pourjahani/MahsaDesk/releases) |
+| Telegram channel | [t.me/mahsa_net](https://t.me/mahsa_net) |
 
+دانلود اندروید: [آخرین نسخه از گیتهاب](https://github.com/GFW-knocker/MahsaNG/releases/latest) · [کانال تلگرام](https://t.me/mahsa_net)
+
+## Why MahsaNG?
+
+- **Free** — no subscription, no account.
+- **Community-powered** — people share their unused VPS bandwidth so others can get online.
+- **Fair** — shared configs are protected so they can't be stolen and resold.
+- **Hard to block** — built-in tools like DNS over HTTPS, TLS fragment, fake host, rotating configs and random subdomains.
+
+## How it works
+
+MahsaNG is the user app of the [Segaro_Dream](https://github.com/GFW-knocker/Segaro_Dream) project. Community members donate server configs; the system watches which ones still work for each network (ISP) and automatically hands the best ones to users. The more people use and rate configs, the smarter the selection gets.
+
+Our goal: a VPN that is **free, stable, scalable, distributed and filter-resistant**.
+
+## What's in this repo?
+
+| Folder | What it is |
+| --- | --- |
+| `V2rayNG/` | The Android app source |
+| `MahsaDesk/` | The Windows desktop app ([MahsaDesk](https://github.com/pourjahani/MahsaDesk)) |
+| `AndroidLibV2rayLite/` | The native networking library used by the app |
+
+## Building from source
+
+**The Android app cannot be built into the Play Store APK directly from this repo.** Two parts are closed on purpose:
+
+1. Config encryption — keeps donated configs from being copied and resold.
+2. Server authentication — keeps the Mahsa server from being abused.
+
+Everything used to bypass filtering is open: it is published in [Mahsa Xray-Core](https://github.com/GFW-knocker/Xray-core), including Wireguard Noise, YouTube Direct, TLS/HTTPS/DoH fragmenting and fake host.
+
+**Want a fully open build?** Use [NikaNG](https://github.com/mahsanet/NikaNG) — a fully open-source fork of v2rayNG with the Mahsa Xray-core. It builds with GitHub Actions or locally. Before compiling, place [libv2ray.aar](https://github.com/GFW-knocker/AndroidLibXrayLite) into `v2rayng/apps/libs`.
+
+## Community
+
+Share your unused bandwidth, report what works, and help others stay online:
+
+- Telegram: [t.me/mahsa_net](https://t.me/mahsa_net)
+- Issues & ideas: [open an issue](https://github.com/GFW-knocker/MahsaNG/issues)
