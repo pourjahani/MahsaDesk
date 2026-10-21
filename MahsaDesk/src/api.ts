@@ -69,6 +69,8 @@ export interface Settings {
   per_app_mode: string;
   per_app_list: string;
   psiphon_mode: string;
+  mode: string;
+  failover_mode: string;
   psiphon_socks_port: number;
   psiphon_http_port: number;
   psiphon_region: string;

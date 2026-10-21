@@ -36,6 +36,8 @@ pub struct Settings {
     pub per_app_list: String,    // newline separated process names
     // Psiphon tunnel (psiphon only / psiphon after)
     pub psiphon_mode: String,    // "off" | "only" | "after"
+    pub mode: String,          // "systemProxy" | "tun" | "psiphon-only" | "psiphon-after"
+    pub failover_mode: String, // "off" | "round-robin" | "failover"
     pub psiphon_socks_port: u16, // default 7501
     pub psiphon_http_port: u16,  // default 7502
     pub psiphon_region: String,  // "" = auto, else 2-letter country
@@ -81,6 +83,8 @@ impl Default for Settings {
             per_app_mode: "off".into(),
             per_app_list: String::new(),
             psiphon_mode: "off".into(),
+            mode: "systemProxy".into(),
+            failover_mode: "off".into(),
             psiphon_socks_port: 7501,
             psiphon_http_port: 7502,
             psiphon_region: String::new(),

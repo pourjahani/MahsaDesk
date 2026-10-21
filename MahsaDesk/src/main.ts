@@ -113,6 +113,7 @@ const NAV = [
   { id: "settings", icon: "settings", label: "nav.settings" },
   { id: "logs", icon: "logs", label: "nav.logs" },
   { id: "about", icon: "about", label: "nav.about" },
+  { id: "connection", icon: "power", label: "nav.connection" },
 ];
 
 function buildLayout() {
@@ -246,6 +247,7 @@ function renderView() {
     case "settings": renderSettings(); break;
     case "logs": renderLogs(); break;
     case "about": renderAbout(); break;
+    case "connection": renderConnect(); break;
   }
 }
 
@@ -620,6 +622,30 @@ function renderSubs() {
   btnAdd.prepend(icon("plus"));
   btnAdd.onclick = () => subDialog(null);
   actions.append(btnAdd);
+  // Get link button to fetch configs from subscription URL
+  const btnGetLink = el("button", "btn", t("subs.getLink"));
+  btnGetLink.prepend(icon("dl"));
+  btnGetLink.onclick = () => getLinkDialog();
+  actions.append(btnGetLink);
+  // Import from clipboard button
+  const btnImportClip = el("button", "btn", t("servers.scanClip"));
+  btnImportClip.prepend(icon("scan"));
+  btnImportClip.onclick = async () => {
+    try {
+      const data = await readQrFromClipboard();
+      if (!data) {
+        alert(t("servers.scanNone"));
+        return;
+      }
+      const n = await api.importLinks(data, "");
+      await api.persist();
+      await refreshData();
+      renderView();
+      alert(String(n));
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+  };
   head.append(actions);
   wrap.append(head);
 
@@ -722,6 +748,56 @@ function subDialog(s: Subscription | null) {
     }
   };
   inName.focus();
+}
+
+// ---------------------------------------------------------------------------
+// get link dialog for fetching subscription configs
+// ---------------------------------------------------------------------------
+
+async function getLinkDialog() {
+  const dlg = el("div", "modal-back");
+  const box = el("div", "modal");
+  const title = el("h2", "", t("subs.getLink"));
+  const form = el("div", "form");
+  const mk = (label: string, val: string, type = "text"): HTMLInputElement => {
+    const f = el("div", "field");
+    f.append(el("label", "", label));
+    const i = el("input") as HTMLInputElement;
+    i.type = type;
+    i.value = val;
+    f.append(i);
+    form.append(f);
+    return i;
+  };
+  const inUrl = mk(t("subs.url"), "");
+  inUrl.focus();
+  const row = el("div", "modal-actions");
+  const cancel = el("button", "btn ghost", t("servers.cancel"));
+  const ok = el("button", "btn primary", t("saved"));
+  row.append(cancel, ok);
+  box.append(title, form, row);
+  dlg.append(box);
+  document.body.append(dlg);
+  cancel.onclick = () => dlg.remove();
+  ok.onclick = async () => {
+    try {
+      const url = inUrl.value.trim();
+      if (!url) return;
+      // Show fetching state
+      ok.disabled = true;
+      ok.textContent = t("requirements.updating");
+      const n = await api.importLinks(url, "");
+      dlg.remove();
+      await api.persist();
+      await refreshData();
+      renderView();
+      alert(`${t("subs.updated")}: ${n}`);
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    ok.disabled = false;
+    ok.textContent = t("saved");
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,17 +1215,104 @@ function renderPsiphon() {
     ])
   );
   card.append(grid2);
-  card.append(mkSw(t("psiphon.aggressive"), "psiphon_aggressive"));
-  wrap.append(card);
-  mainEl.append(wrap);
+  card.append(mkSw(t("psiphon.aggressive"), "psiphon_aggressive"));wrap.append(card);
+mainEl.append(wrap);
 }
 
-// Engine presence check removed (needs a dedicated probe); the connect error
-// alert already tells the user when psiphon-tunnel-core.exe is missing.
+// ---------------------------------------------------------------------------
+// connection view (separate tab: connect button + method options)
+// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// tools view (DNS scanner / IP scanner / network tools)
-// ---------------------------------------------------------------------------
+function renderConnect() {
+  const wrap = el("div", "view");
+  const head = el("div", "view-head");
+  head.append(el("h1", "", t("connection.title")));
+  wrap.append(head);
+
+  if (!settings) return;
+  const s = settings;
+
+  // connect status row
+  const statusRow = el("div", "conn-row");
+  const statusDot = el("span", `dot ${s.mode === "systemProxy" || !s.mode ? "off" : s.mode === "tun" ? "on" : "off"}`);
+      const modeLabel: Record<string, string> = {
+        "systemProxy": "status.systemMode",
+        "system": "status.systemMode",
+        "tun": "status.tunMode",
+        "psiphon-only": "status.psiphonOnly",
+        "psiphon-after": "status.psiphonAfter",
+      };
+  const statusLabel = el("span", "status-label", s.mode && s.mode !== "systemProxy" ? t(modeLabel[s.mode] ?? "status.disconnected") : t("status.disconnected"));
+  statusRow.append(statusDot, statusLabel);
+  wrap.append(statusRow);
+
+  // method selection grid
+  const grid = el("div", "bento");
+  const sysBox = el("div", "bento-box");
+  sysBox.append(
+    el("h3", "", t("settings.systemMode")),
+    el("p", "muted", t("settings.systemModeDesc")),
+    el("button", "btn primary", t("connection.connect"))
+  );
+  const btnSystem = sysBox.querySelector("button.btn.primary");
+  btnSystem.onclick = async () => {
+    await doConnect("system");
+    updateStatus();
+    renderView();
+  };
+
+  const tunBox = el("div", "bento-box");
+  tunBox.append(
+    el("h3", "", t("settings.tunMode")),
+    el("p", "muted", t("settings.tunModeDesc")),
+    el("button", "btn", t("connection.connect"))
+  );
+  const btnTun = tunBox.querySelector("button.btn");
+  btnTun.onclick = async () => {
+    await doConnect("tun");
+    updateStatus();
+    renderView();
+  };
+
+  const psiphonBox = el("div", "bento-box");
+  psiphonBox.append(
+    el("h3", "", t("status.psiphonOnly")),
+    el("p", "muted", t("psiphon.onlyDesc")),
+    el("button", "btn", t("connection.connect"))
+  );
+  const btnPsiphonOnly = psiphonBox.querySelector("button.btn");
+  btnPsiphonOnly.onclick = async () => {
+    await doConnect("psiphon-only");
+    updateStatus();
+    renderView();
+  };
+
+  const psiphonAfterBox = el("div", "bento-box");
+  psiphonAfterBox.append(
+    el("h3", "", t("status.psiphonAfter")),
+    el("p", "muted", t("psiphon.afterDesc")),
+    el("button", "btn", t("connection.connect"))
+  );
+  const btnPsiphonAfter = psiphonAfterBox.querySelector("button.btn");
+  btnPsiphonAfter.onclick = async () => {
+    await doConnect("psiphon-after");
+    updateStatus();
+    renderView();
+  };
+  grid.append(psiphonAfterBox);
+
+  wrap.append(grid);
+
+  // initially select the mode that matches saved settings
+  if (s.mode === "tun") tunBox.classList.add("selected");
+  else if (s.mode === "psiphon-only") psiphonBox.classList.add("selected");
+  else if (s.mode === "psiphon-after") psiphonAfterBox.classList.add("selected");
+  else sysBox.classList.add("selected");
+  }
+
+  // ---------------------------------------------------------------------------
+  // tools view (DNS scanner / IP scanner / network tools)
+  // ---------------------------------------------------------------------------
 
 function renderTools() {
   const wrap = el("div", "view");
@@ -1399,9 +1562,44 @@ function renderSettings() {
   if (!settings) return;
   const s = settings;
 
-  const mkSwitch = (title: string, key: keyof Settings) => {
+  // search input for settings
+  const searchWrapper = el("div", "field");
+  const searchInput = el("input") as HTMLInputElement;
+  searchInput.type = "text";
+  searchInput.placeholder = t("settings.search");
+  searchInput.className = "settings-search";
+  searchInput.addEventListener("input", filterSettings);
+  searchWrapper.append(searchInput);
+
+  function filterSettings() {
+    const query = (searchInput.value || "").toLowerCase();
+    const allElements = wrap.querySelectorAll(".card, .bento-box");
+    allElements.forEach((el: HTMLElement) => {
+      const text = (el.textContent || "").toLowerCase();
+      el.style.display = text.includes(query) ? "" : "none";
+    });
+    // Show header always
+    const headers = wrap.querySelectorAll("h1, h2");
+    headers.forEach((h: HTMLElement) => {
+      h.style.display = "";
+    });
+  }
+
+  // Initialize: show all first, then apply filter
+  filterSettings();
+
+  const mkSwitch = (title: string, key: keyof Settings, collapsed = false) => {
     const row = el("div", "switch-row");
-    row.append(el("span", "", title));
+    const titleEl = el("span", "", title);
+    const toggle = el("button", "btn ghost small");
+    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    toggle.onclick = () => {
+      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
+      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    };
+    // Initially hide if collapsed
+    if (collapsed) titleEl.style.display = "none";
+    row.append(titleEl, toggle);
     const sw = el("button", `switch ${s[key] ? "on" : ""}`);
     sw.onclick = async () => {
       await save({ [key]: !s[key] } as any);
@@ -1412,9 +1610,18 @@ function renderSettings() {
     return row;
   };
 
-  const mkInput = (title: string, key: keyof Settings, type = "text") => {
+  const mkInput = (title: string, key: keyof Settings, type = "text", collapsed = false) => {
     const f = el("div", "field");
-    f.append(el("label", "", title));
+    const titleEl = el("label", "", title);
+    const toggle = el("button", "btn ghost small");
+    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    toggle.onclick = () => {
+      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
+      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    };
+    // Initially hide if collapsed
+    if (collapsed) titleEl.style.display = "none";
+    f.append(titleEl, toggle);
     const i = el("input") as HTMLInputElement;
     i.type = type;
     i.value = String(s[key] ?? "");
@@ -1425,9 +1632,18 @@ function renderSettings() {
     return f;
   };
 
-  const mkSelect = (title: string, key: keyof Settings, options: [string, string][]) => {
+  const mkSelect = (title: string, key: keyof Settings, options: [string, string][], collapsed = false) => {
     const f = el("div", "field");
-    f.append(el("label", "", title));
+    const titleEl = el("label", "", title);
+    const toggle = el("button", "btn ghost small");
+    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    toggle.onclick = () => {
+      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
+      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
+    };
+    // Initially hide if collapsed
+    if (collapsed) titleEl.style.display = "none";
+    f.append(titleEl, toggle);
     const sel = el("select") as HTMLSelectElement;
     for (const [k, v] of options) {
       const o = el("option", "", v) as HTMLOptionElement;
@@ -1459,25 +1675,45 @@ function renderSettings() {
     ["en", "English"],
     ["fa", "فارسی (RTL)"],
   ];
-  general.append(mkSelect(t("settings.language"), "language", langOptions));
+  // Language is never collapsed
+  general.append(mkSelect(t("settings.language"), "language", langOptions, false));
   general.append(
     (() => {
       const f = mkSelect(t("settings.theme"), "theme", [
         ["auto", t("settings.themeAuto")],
         ["light", t("settings.themeLight")],
         ["dark", t("settings.themeDark")],
-      ]);
+      ], true);
       // mkSelect only persists; apply the theme immediately too
       const sel = f.querySelector("select") as HTMLSelectElement;
       sel.addEventListener("change", () => applyTheme(sel.value));
       return f;
     })()
   );
-  general.append(
-    mkSwitch(t("settings.minimizeTray"), "minimize_to_tray"),
-    mkSwitch(t("settings.autoConnect"), "auto_connect")
-  );
+  // Minimize tray and auto-connect can be collapsed as advanced options
+  general.append(mkSwitch(t("settings.minimizeTray"), "minimize_to_tray", true));
+  general.append(mkSwitch(t("settings.autoConnect"), "auto_connect", true));
   wrap.append(general);
+
+  // ---------------------------------------------------------------------------
+  // failover mode setting
+  // ---------------------------------------------------------------------------
+
+  const failoverCard = el("div", "card");
+  failoverCard.append(el("h2", "", t("settings.failoverTitle")));
+  const failoverRow = el("div", "switch-row");
+  const failoverLabel = el("span", "", t("settings.failoverMode"));
+  failoverRow.append(failoverLabel);
+  const failoverSw = el("button", `switch ${s.failover_mode === "round-robin" || s.failover_mode === "failover" ? "on" : ""}`);
+  failoverSw.onclick = async () => {
+    const newMode = s.failover_mode === "off" ? "round-robin" : "off";
+    await save({ failover_mode: newMode });
+    (s as any).failover_mode = newMode;
+    failoverSw.className = `switch ${newMode !== "off" ? "on" : ""}`;
+  };
+  failoverRow.append(failoverSw);
+  failoverCard.append(failoverRow);
+  wrap.append(failoverCard);
 
   const conn = el("div", "card");
   conn.append(el("h2", "", t("settings.connection")));
