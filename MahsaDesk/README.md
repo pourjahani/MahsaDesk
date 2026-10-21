@@ -19,7 +19,7 @@ The app is available as both an NSIS installer and a portable executable.
 
 ## ✨ Features
 
-### Core Features (v0.3.2)
+### Core Features
 
 - **Xray core** (official XTLS binary) managed by the app - SOCKS 10808 / HTTP 10809
 - **System proxy mode** - automates the Windows system proxy on connect/disconnect
@@ -41,6 +41,15 @@ The app is available as both an NSIS installer and a portable executable.
 - **Deep link import** - `mahsadesk://` URL scheme to hand configs to the app
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
+
+### New in v0.3.4
+
+- **Connection tab** - one-click connect for system proxy / TUN / Psiphon-only / Psiphon-after with live status
+- **Settings search** - find any setting by typing
+- **Advanced-option collapse** - rarely used options hide behind expand/collapse toggles
+- **Subscription URL import** - "Get link" and pasting a subscription URL now fetch configs directly; clipboard QR import button added
+- **Failover mode** - round-robin server toggle in settings
+- Assorted fixes: subscription dialog, connection-tab boxes, phantom error after imports
 
 ### New in v0.3.2
 
