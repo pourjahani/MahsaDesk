@@ -1215,8 +1215,9 @@ function renderPsiphon() {
     ])
   );
   card.append(grid2);
-  card.append(mkSw(t("psiphon.aggressive"), "psiphon_aggressive"));wrap.append(card);
-mainEl.append(wrap);
+  card.append(mkSw(t("psiphon.aggressive"), "psiphon_aggressive"));
+  wrap.append(card);
+  mainEl.append(wrap);
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,6 +1571,7 @@ function renderSettings() {
   searchInput.className = "settings-search";
   searchInput.addEventListener("input", filterSettings);
   searchWrapper.append(searchInput);
+  wrap.append(searchWrapper);
 
   function filterSettings() {
     const query = (searchInput.value || "").toLowerCase();
@@ -1588,62 +1590,60 @@ function renderSettings() {
   // Initialize: show all first, then apply filter
   filterSettings();
 
+  // Shared expand/collapse behavior: the toggle hides the whole row (control
+  // included) and its label always reflects the current state.
+  const mkCollapse = (body: HTMLElement, initialCollapsed: boolean) => {
+    const toggle = el("button", "btn ghost small");
+    const sync = () => {
+      toggle.textContent =
+        body.style.display === "none" ? t("settings.expand") : t("settings.collapse");
+    };
+    toggle.onclick = () => {
+      body.style.display = body.style.display === "none" ? "" : "none";
+      sync();
+    };
+    if (initialCollapsed) body.style.display = "none";
+    sync();
+    return toggle;
+  };
+
   const mkSwitch = (title: string, key: keyof Settings, collapsed = false) => {
     const row = el("div", "switch-row");
+    const body = el("span", "switch-body");
     const titleEl = el("span", "", title);
-    const toggle = el("button", "btn ghost small");
-    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    toggle.onclick = () => {
-      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
-      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    };
-    // Initially hide if collapsed
-    if (collapsed) titleEl.style.display = "none";
-    row.append(titleEl, toggle);
+    body.append(titleEl);
     const sw = el("button", `switch ${s[key] ? "on" : ""}`);
     sw.onclick = async () => {
       await save({ [key]: !s[key] } as any);
       (s as any)[key] = !s[key];
       sw.className = `switch ${s[key] ? "on" : ""}`;
     };
-    row.append(sw);
+    body.append(sw);
+    row.append(body);
+    if (collapsed) row.append(mkCollapse(body, true));
     return row;
   };
 
   const mkInput = (title: string, key: keyof Settings, type = "text", collapsed = false) => {
     const f = el("div", "field");
-    const titleEl = el("label", "", title);
-    const toggle = el("button", "btn ghost small");
-    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    toggle.onclick = () => {
-      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
-      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    };
-    // Initially hide if collapsed
-    if (collapsed) titleEl.style.display = "none";
-    f.append(titleEl, toggle);
+    const body = el("div", "field-body");
+    body.append(el("label", "", title));
     const i = el("input") as HTMLInputElement;
     i.type = type;
     i.value = String(s[key] ?? "");
     i.addEventListener("change", () =>
       save({ [key]: type === "number" ? Number(i.value || 0) : i.value } as any)
     );
-    f.append(i);
+    body.append(i);
+    f.append(body);
+    if (collapsed) f.append(mkCollapse(body, true));
     return f;
   };
 
   const mkSelect = (title: string, key: keyof Settings, options: [string, string][], collapsed = false) => {
     const f = el("div", "field");
-    const titleEl = el("label", "", title);
-    const toggle = el("button", "btn ghost small");
-    toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    toggle.onclick = () => {
-      titleEl.style.display = titleEl.style.display === "none" ? "" : "none";
-      toggle.textContent = collapsed ? t("settings.expand") : t("settings.collapse");
-    };
-    // Initially hide if collapsed
-    if (collapsed) titleEl.style.display = "none";
-    f.append(titleEl, toggle);
+    const body = el("div", "field-body");
+    body.append(el("label", "", title));
     const sel = el("select") as HTMLSelectElement;
     for (const [k, v] of options) {
       const o = el("option", "", v) as HTMLOptionElement;
@@ -1652,7 +1652,9 @@ function renderSettings() {
     }
     sel.value = String(s[key] ?? "");
     sel.onchange = () => save({ [key]: sel.value } as any);
-    f.append(sel);
+    body.append(sel);
+    f.append(body);
+    if (collapsed) f.append(mkCollapse(body, true));
     return f;
   };
 

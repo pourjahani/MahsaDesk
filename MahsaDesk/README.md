@@ -2,7 +2,7 @@
 
 Desktop port of the [MahsaNG](https://github.com/GFW-knocker/MahsaNG) (v2rayNG fork) client for Windows. A decentralized, non-profit client where everyone can share their configs to help others reach a free internet.
 
-![MahsaDesk Logo](icons/icon.ico)
+![MahsaDesk Logo](../Mahsa_logo.jpg)
 
 ## 📋 Overview
 

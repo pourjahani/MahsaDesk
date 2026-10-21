@@ -712,3 +712,30 @@ textarea.lines {
 .ph svg {
   display: block;
 }
+
+/* settings collapse bodies: hidden group keeps its toggle visible */
+.switch-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.field-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.switch-row > .btn.ghost.small,
+.field > .btn.ghost.small {
+  flex: none;
+  margin-inline-start: 10px;
+  font-size: 11px;
+}
+
+.settings-search {
+  margin: 10px 0 14px;
+}
