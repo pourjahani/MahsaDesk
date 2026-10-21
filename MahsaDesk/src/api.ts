@@ -87,7 +87,6 @@ export const api = {
   setSettings: (s: Settings) => invoke<void>("set_settings", { newSettings: s }),
   listServers: () => invoke<ServerProfile[]>("list_servers"),
   saveServer: (p: ServerProfile) => invoke<void>("save_server", { dirServer: p }),
-  persist: () => invoke<void>("persist"),
   deleteServer: (id: string) => invoke<void>("delete_server", { id }),
   setActive: (id: string) => invoke<void>("set_active", { id }),
   importLinks: (text: string, subId: string) =>

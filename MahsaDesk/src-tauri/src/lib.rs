@@ -355,14 +355,24 @@ fn set_active(app: AppHandle, st: State<ManagedState>, id: String) -> Result<(),
 }
 
 #[tauri::command]
-fn import_links(
+async fn import_links(
     app: AppHandle,
-    st: State<ManagedState>,
+    st: State<'_, ManagedState>,
     text: String,
     sub_id: Option<String>,
 ) -> Result<usize, String> {
+    let trimmed = text.trim().to_string();
+    // a lone http(s) URL is a subscription link: fetch its payload first
+    let payload = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if trimmed.split_whitespace().count() != 1 {
+            return Err("invalid share link".into());
+        }
+        subs::fetch_payload(&trimmed).await?
+    } else {
+        trimmed
+    };
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let profiles = servers::parse_payload(&text);
+    let profiles = servers::parse_payload(&payload);
     let n = profiles.len();
     if n == 0 {
         return Err("no valid share links found".into());

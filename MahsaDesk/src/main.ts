@@ -422,11 +422,9 @@ function renderServers() {
     btnDel.onclick = async () => {
       if (!confirm(t("servers.delete") + ": " + (p.remark || p.address))) return;
       await api.deleteServer(p.id);
-      await api.persist();
       servers = await api.listServers();
       renderView();
     };
-    btnPing.append;
     right.append(btnPing, btnReal, btnQr, btnCopy, btnUse, btnEdit, btnDel);
     item.append(info, right);
     item.addEventListener("dblclick", async () => {
@@ -472,7 +470,6 @@ async function scanFromClipboard(): Promise<void> {
       return;
     }
     const n = await api.importLinks(data, "");
-    await api.persist();
     servers = await api.listServers();
     renderView();
     alert(String(n));
@@ -527,7 +524,6 @@ function importDialog() {
     try {
       const n = await api.importLinks(text, "");
       dlg.remove();
-      await api.persist();
       servers = await api.listServers();
       renderView();
       title.textContent = `${n}`;
@@ -591,7 +587,7 @@ function editDialog(p: ServerProfile) {
 
   const row = el("div", "modal-actions");
   const cancel = el("button", "btn ghost", t("servers.cancel"));
-  const ok = el("button", "btn primary", t("saved"));
+  const ok = el("button", "btn primary", t("servers.edit"));
   row.append(cancel, ok);
   box.append(title, form, row);
   dlg.append(box);
@@ -602,7 +598,6 @@ function editDialog(p: ServerProfile) {
       (p as any)[k] = v.type === "number" ? Number(v.value || 0) : v.value;
     }
     await api.saveServer(p);
-    await api.persist();
     servers = await api.listServers();
     dlg.remove();
     renderView();
@@ -638,7 +633,6 @@ function renderSubs() {
         return;
       }
       const n = await api.importLinks(data, "");
-      await api.persist();
       await refreshData();
       renderView();
       alert(String(n));
@@ -646,6 +640,7 @@ function renderSubs() {
       alert(`${t("error")}: ${e}`);
     }
   };
+  actions.append(btnImportClip);
   head.append(actions);
   wrap.append(head);
 
@@ -720,10 +715,11 @@ function subDialog(s: Subscription | null) {
   const inHours = mk(t("subs.interval"), String(s?.update_interval_hours || 6), "number");
   const row = el("div", "modal-actions");
   const cancel = el("button", "btn ghost", t("servers.cancel"));
-  const ok = el("button", "btn primary", t("saved"));
+  const ok = el("button", "btn primary", s ? t("servers.edit") : t("subs.add"));
   row.append(cancel, ok);
   box.append(title, form, row);
   dlg.append(box);
+  document.body.append(dlg);
   cancel.onclick = () => dlg.remove();
   ok.onclick = async () => {
     try {
@@ -773,7 +769,7 @@ async function getLinkDialog() {
   inUrl.focus();
   const row = el("div", "modal-actions");
   const cancel = el("button", "btn ghost", t("servers.cancel"));
-  const ok = el("button", "btn primary", t("saved"));
+  const ok = el("button", "btn primary", t("subs.getLink"));
   row.append(cancel, ok);
   box.append(title, form, row);
   dlg.append(box);
@@ -788,7 +784,6 @@ async function getLinkDialog() {
       ok.textContent = t("requirements.updating");
       const n = await api.importLinks(url, "");
       dlg.remove();
-      await api.persist();
       await refreshData();
       renderView();
       alert(`${t("subs.updated")}: ${n}`);
@@ -796,7 +791,7 @@ async function getLinkDialog() {
       alert(`${t("error")}: ${e}`);
     }
     ok.disabled = false;
-    ok.textContent = t("saved");
+    ok.textContent = t("subs.getLink");
   };
 }
 
@@ -816,7 +811,6 @@ function renderRouting() {
   card1.append(el("h2", "", t("routing.preset")));
   const selWrap = el("div", "field");
   const preset = el("select") as HTMLSelectElement;
-  for (const [k, v] of Object.entries(t === undefined ? {} : {})) { void k; void v; }
   const presetOptions: [string, string][] = [
     ["global", t("routing.presets.global")],
     ["ir", t("routing.presets.ir")],
@@ -1231,21 +1225,19 @@ function renderConnect() {
   wrap.append(head);
 
   if (!settings) return;
-  const s = settings;
 
-  // connect status row
+  // connect status row (reflects the live runtime state, not stale settings)
   const statusRow = el("div", "conn-row");
-  const statusDot = el("span", `dot ${s.mode === "systemProxy" || !s.mode ? "off" : s.mode === "tun" ? "on" : "off"}`);
-      const modeLabel: Record<string, string> = {
-        "systemProxy": "status.systemMode",
-        "system": "status.systemMode",
-        "tun": "status.tunMode",
-        "psiphon-only": "status.psiphonOnly",
-        "psiphon-after": "status.psiphonAfter",
-      };
-  const statusLabel = el("span", "status-label", s.mode && s.mode !== "systemProxy" ? t(modeLabel[s.mode] ?? "status.disconnected") : t("status.disconnected"));
+  const statusDot = el("span", "dot off");
+  const statusLabel = el("span", "status-label", t("status.disconnected"));
   statusRow.append(statusDot, statusLabel);
   wrap.append(statusRow);
+  const modeLabel: Record<string, string> = {
+    system: "status.systemMode",
+    tun: "status.tunMode",
+    "psiphon-only": "status.psiphonOnly",
+    "psiphon-after": "status.psiphonAfter",
+  };
 
   // method selection grid
   const grid = el("div", "bento");
@@ -1300,16 +1292,26 @@ function renderConnect() {
     updateStatus();
     renderView();
   };
-  grid.append(psiphonAfterBox);
-
+  grid.append(sysBox, tunBox, psiphonBox, psiphonAfterBox);
   wrap.append(grid);
 
-  // initially select the mode that matches saved settings
-  if (s.mode === "tun") tunBox.classList.add("selected");
-  else if (s.mode === "psiphon-only") psiphonBox.classList.add("selected");
-  else if (s.mode === "psiphon-after") psiphonAfterBox.classList.add("selected");
-  else sysBox.classList.add("selected");
-  }
+  // highlight the box matching the live connection state
+  const boxes: [HTMLElement, string][] = [
+    [sysBox, "system"],
+    [tunBox, "tun"],
+    [psiphonBox, "psiphon-only"],
+    [psiphonAfterBox, "psiphon-after"],
+  ];
+  api.status().then((st) => {
+    statusDot.className = `dot ${st.running ? "on" : "off"}`;
+    statusLabel.textContent = st.running
+      ? t(modeLabel[st.mode ?? ""] ?? "status.connected")
+      : t("status.disconnected");
+    for (const [box, mode] of boxes) {
+      box.classList.toggle("selected", st.running && st.mode === mode);
+    }
+  });
+}
 
   // ---------------------------------------------------------------------------
   // tools view (DNS scanner / IP scanner / network tools)
@@ -1804,8 +1806,6 @@ function renderSettings() {
 
 let trafficUp = 0;
 let trafficDown = 0;
-let lastUp = 0;
-let lastDown = 0;
 
 function renderLogs() {
   const wrap = el("div", "view");
@@ -1914,12 +1914,7 @@ function listenTraffic() {
       trafficUp = up;
       trafficDown = down;
       if (trafficEl) {
-        const dUp = up - lastUp;
-        const dDown = down - lastDown;
-        lastUp = lastUp === 0 ? 0 : lastUp;
         trafficEl.textContent = `- ${fmtBytes(down)} / ${fmtBytes(up)}`;
-        void dUp;
-        void dDown;
       }
       const upNum = document.querySelector(".traffic-num") as HTMLElement | null;
       if (upNum && currentView === "logs") {
@@ -1927,8 +1922,6 @@ function listenTraffic() {
         if (els[0]) els[0].textContent = fmtBytes(down);
         if (els[1]) els[1].textContent = fmtBytes(up);
       }
-      lastUp = up;
-      lastDown = down;
     });
     listen("core-log", (e: any) => {
       const box = document.getElementById("logbox");
