@@ -8,3 +8,4 @@ src-tauri/binaries/wintun.dll
 src-tauri/binaries/geoip.dat
 src-tauri/binaries/geosite.dat
 npm-debug.log*
+src-tauri/.cargo/config.toml
