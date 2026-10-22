@@ -333,3 +333,154 @@ fn ip_presets_expand_to_valid_ips() {
     let ips = tools::expand_candidate_ips("custom", custom, 8);
     assert_eq!(ips, vec!["1.2.3.4", "5.6.7.8"]);
 }
+
+// ---------------------------------------------------------------------------
+// #15: Clash YAML + sing-box JSON import
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_clash_yaml_subscription() {
+    let yaml = r#"
+mixed-port: 7890
+mode: rule
+proxies:
+  - name: "clash-vmess"
+    type: vmess
+    server: v.example.com
+    port: 443
+    uuid: 11111111-2222-3333-4444-555555555555
+    alterId: 0
+    cipher: auto
+    udp: true
+    tls: true
+    servername: sni.example.com
+    network: ws
+    ws-opts:
+      path: /wspath
+      headers:
+        Host: cdn.example.com
+  - name: "clash-ss"
+    type: ss
+    server: ss.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: secret123
+  - name: "clash-hy2"
+    type: hysteria2
+    server: hy.example.com
+    port: 8443
+    password: hpass
+    obfs: salamander
+    obfs-password: obfsbw
+    sni: hy.example.com
+  - name: "clash-vless-reality"
+    type: vless
+    server: r.example.com
+    port: 443
+    uuid: 99999999-8888-7777-6666-555555555555
+    flow: xtls-rprx-vision
+    tls: true
+    servername: www.example.org
+    network: tcp
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: PUBKEY123
+      short-id: ab01
+"#;
+    let out = servers::parse_payload(yaml);
+    assert_eq!(out.len(), 4, "all four clash proxies: {:?}", out.iter().map(|p| p.remark.clone()).collect::<Vec<_>>());
+
+    let vmess = out.iter().find(|p| p.remark == "clash-vmess").unwrap();
+    assert_eq!(vmess.protocol, "vmess");
+    assert_eq!(vmess.address, "v.example.com");
+    assert_eq!(vmess.port, 443);
+    assert_eq!(vmess.auth, "11111111-2222-3333-4444-555555555555");
+    assert_eq!(vmess.security, "tls");
+    assert_eq!(vmess.sni, "sni.example.com");
+    assert_eq!(vmess.net, "ws");
+    assert_eq!(vmess.path, "/wspath");
+    assert_eq!(vmess.host, "cdn.example.com");
+
+    let ss = out.iter().find(|p| p.remark == "clash-ss").unwrap();
+    assert_eq!(ss.protocol, "shadowsocks");
+    assert_eq!(ss.method, "aes-256-gcm");
+    assert_eq!(ss.auth, "secret123");
+
+    let hy = out.iter().find(|p| p.remark == "clash-hy2").unwrap();
+    assert_eq!(hy.protocol, "hysteria2");
+    assert_eq!(hy.auth, "hpass");
+    assert_eq!(hy.method, "salamander");
+    assert_eq!(hy.encryption, "obfsbw");
+    assert_eq!(hy.sni, "hy.example.com");
+
+    let vless = out.iter().find(|p| p.remark == "clash-vless-reality").unwrap();
+    assert_eq!(vless.protocol, "vless");
+    assert_eq!(vless.security, "reality");
+    assert_eq!(vless.pbk, "PUBKEY123");
+    assert_eq!(vless.sid, "ab01");
+    assert_eq!(vless.flow, "xtls-rprx-vision");
+    assert_eq!(vless.fingerprint, "chrome");
+}
+
+#[test]
+fn parses_singbox_json_config() {
+    let json = r#"{
+      "outbounds": [
+        {
+          "type": "vless",
+          "tag": "sb-vless",
+          "server": "a.example",
+          "server_port": 443,
+          "uuid": "u-u-i-d",
+          "flow": "xtls-rprx-vision",
+          "tls": {
+            "enabled": true,
+            "server_name": "a.example",
+            "utls": { "enabled": true, "fingerprint": "chrome" },
+            "reality": { "enabled": true, "public_key": "PBK", "short_id": "sid" }
+          },
+          "transport": { "type": "ws", "path": "/w", "headers": { "Host": "h.example" } }
+        },
+        {
+          "type": "hysteria2",
+          "tag": "sb-hy",
+          "server": "b.example",
+          "server_port": 443,
+          "password": "pp",
+          "obfs": { "type": "salamander", "password": "oo" },
+          "tls": { "enabled": true, "server_name": "b.example" }
+        },
+        { "type": "wireguard", "tag": "wg", "server": "w.example", "server_port": 51820 },
+        { "type": "selector", "tag": "sel", "outbounds": ["sb-vless"] }
+      ]
+    }"#;
+    let out = servers::parse_payload(json);
+    assert_eq!(out.len(), 2, "wireguard + selector skipped: {:?}", out.iter().map(|p| p.remark.clone()).collect::<Vec<_>>());
+
+    let vless = out.iter().find(|p| p.remark == "sb-vless").unwrap();
+    assert_eq!(vless.protocol, "vless");
+    assert_eq!(vless.address, "a.example");
+    assert_eq!(vless.auth, "u-u-i-d");
+    assert_eq!(vless.flow, "xtls-rprx-vision");
+    assert_eq!(vless.security, "reality");
+    assert_eq!(vless.pbk, "PBK");
+    assert_eq!(vless.sid, "sid");
+    assert_eq!(vless.fingerprint, "chrome");
+    assert_eq!(vless.net, "ws");
+    assert_eq!(vless.path, "/w");
+    assert_eq!(vless.host, "h.example");
+
+    let hy = out.iter().find(|p| p.remark == "sb-hy").unwrap();
+    assert_eq!(hy.protocol, "hysteria2");
+    assert_eq!(hy.auth, "pp");
+    assert_eq!(hy.method, "salamander");
+    assert_eq!(hy.encryption, "oo");
+    assert_eq!(hy.sni, "b.example");
+}
+
+#[test]
+fn plain_link_lists_still_work_after_sniffing() {
+    let links = "vless://u@h.example.com:443?encryption=none&security=tls&sni=h.example.com#X\nss://YWVzLTI1Ni1nY206c2VjcmV0QHNzLmV4YW1wbGUuY29tOjgzODg#S";
+    let out = servers::parse_payload(links);
+    assert_eq!(out.len(), 2);
+}

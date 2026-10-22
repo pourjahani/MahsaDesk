@@ -739,3 +739,163 @@ textarea.lines {
 .settings-search {
   margin: 10px 0 14px;
 }
+
+/* servers toolbar (#12: search + sort + protocol chips) */
+.srv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 12px;
+}
+
+.srv-search {
+  flex: 1;
+  min-width: 160px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.srv-sort {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.filter-chip {
+  cursor: pointer;
+  text-transform: none;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.filter-chip.on {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+/* bulk selection bar (#14) */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.bulk-count {
+  font-size: 12px;
+  color: var(--muted);
+  margin-inline-end: auto;
+}
+
+.srv-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-text, #4f8cff);
+  margin-inline-end: 4px;
+  cursor: pointer;
+  flex: none;
+}
+
+.btn.danger {
+  background: transparent;
+  border: 1px solid var(--danger, #e5484d);
+  color: var(--danger, #e5484d);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger, #e5484d);
+  color: #fff;
+}
+
+/* share endpoint dialog (#16) */
+.share-url {
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* transient toast (#6 port shifts) */
+.toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text, #222);
+  color: var(--bg, #fff);
+  padding: 9px 16px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  z-index: 3000;
+  max-width: 80vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* doctor + crash detail text */
+.doctor-detail {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+  text-align: start;
+}
+
+/* first-run wizard (#24) */
+.wizard .modal {
+  max-width: 560px;
+}
+
+.wizard-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wizard-step textarea {
+  min-height: 120px;
+  resize: vertical;
+  width: 100%;
+}
+
+.wizard-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.wizard-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.wizard-dots .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.wizard-dots .dot.on {
+  background: var(--accent-text);
+}

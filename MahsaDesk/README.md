@@ -42,6 +42,20 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.5
+
+- **Per-app gate in system-proxy mode** - bypass/allow rules now work without TUN: the app owns the port the system proxy points at, identifies each client process by PID and forwards or dials per your rules - no admin rights, no kernel driver
+- **Hysteria2 without admin** - hy2 profiles now connect in system-proxy mode too, through a non-elevated sing-box sidecar (previously TUN only)
+- **Verified engine binaries** - every shipped engine gets a SHA-256 recorded when the build was made; the Requirements card shows verified / not verified and still upgrades engines in place
+- **Smarter Servers view** - live search, sort (default / ping / name / protocol / subscription / newest), per-subscription filter, and bulk select to ping, copy or delete many servers at once
+- **Share your pool as a subscription** - one click starts a local HTTP endpoint (custom port, LAN toggle, QR code) that phones and other PCs can add as a subscription URL
+- **Clash and sing-box import** - paste a Clash YAML or sing-box JSON config and its proxies are extracted; curated community subscription sources are one click away
+- **Connection doctor** - right after connecting, six checks (core process, SOCKS/HTTP ports, tunnel forwarding, exit IP, DNS) say exactly which link is broken
+- **Better logs** - level filter, full-text search, copy all, export to file, and a crash history of abnormal engine exits
+- **Per-ISP anti-filtering presets** - one-click TLS-fragment presets for MCI/Hiweb, Irancell, TCI/DSL and Rightel, based on MahsaNet's published fragment guidance
+- **First-run wizard** - language, servers, geo data: a four-step tour the first time the app starts
+- Smaller: busy ports auto-shift before connecting, no flashing console windows, full English/Persian parity on every new screen
+
 ### New in v0.3.4
 
 - **Connection tab** - one-click connect for system proxy / TUN / Psiphon-only / Psiphon-after with live status

@@ -80,6 +80,17 @@ export interface Settings {
   ech_config: string;
   front_enabled: boolean;
   front_host: string;
+  share_port: number;
+  share_lan: boolean;
+  wizard_done: boolean | null;
+}
+
+export interface ShareInfo {
+  url: string;
+  local_url: string;
+  lan_url: string | null;
+  port: number;
+  lan: boolean;
 }
 
 export const api = {
@@ -88,6 +99,21 @@ export const api = {
   listServers: () => invoke<ServerProfile[]>("list_servers"),
   saveServer: (p: ServerProfile) => invoke<void>("save_server", { dirServer: p }),
   deleteServer: (id: string) => invoke<void>("delete_server", { id }),
+  deleteServers: (ids: string[]) => invoke<void>("delete_servers", { ids }),
+  exportLinks: (ids: string[]) => invoke<string[]>("export_links", { ids }),
+  shareStart: (port: number, lan: boolean) =>
+    invoke<ShareInfo>("share_server_start", { port, lan }),
+  shareStop: () => invoke<void>("share_server_stop"),
+  shareStatus: () => invoke<ShareInfo | null>("share_server_status"),
+  connectionDoctor: () => invoke<DoctorCheck[]>("connection_doctor"),
+  crashHistory: () =>
+    invoke<{ time: number; code: number | null; config: string; tail: string[] }[]>(
+      "get_crash_history"
+    ),
+  exportLogs: (text: string) => invoke<string>("export_logs", { text }),
+  ispPresets: () => invoke<IspPreset[]>("isp_presets"),
+  detectIsp: (isp: string, org: string) =>
+    invoke<string | null>("detect_isp", { isp, org }),
   setActive: (id: string) => invoke<void>("set_active", { id }),
   importLinks: (text: string, subId: string) =>
     invoke<number>("import_links", { text, subId: subId || null }),
@@ -101,7 +127,8 @@ export const api = {
   testAllDelays: () => invoke<{ id: string; delay: number | null }[]>("test_all_delays"),
   connect: (mode: string) => invoke<void>("connect", { mode }),
   disconnect: () => invoke<void>("disconnect_cmd"),
-  status: () => invoke<{ running: boolean; mode: string | null }>("status"),
+  status: () =>
+    invoke<{ running: boolean; mode: string | null; hy2_running?: boolean }>("status"),
   getLogs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   exportConfig: () => invoke<string>("export_config"),
@@ -128,8 +155,8 @@ export const api = {
     invoke<PortCheckResult>("port_check_cmd", { host, port }),
   myIp: () => invoke<Record<string, string>>("my_ip_cmd"),
   netSpeed: (bytes: number) => invoke<number>("net_speed_cmd", { bytes }),
-  requirementsStatus: () =>
-    invoke<ReqInfo[]>("requirements_status"),
+  requirementsStatus: (remote = true) =>
+    invoke<ReqInfo[]>("requirements_status", { remote }),
   requirementsUpgrade: (key: string) =>
     invoke<ReqInfo>("requirements_upgrade", { key }),
   appUpdateCheck: () => invoke<AppUpdateInfo>("app_update_check"),
@@ -151,6 +178,22 @@ export interface ReqInfo {
   installed_version: string | null;
   available_version: string | null;
   update_available: boolean;
+  /** file hash matches the pinned .sha marker (#25) */
+  verified: boolean;
+}
+
+export interface IspPreset {
+  id: string;
+  fragment_enabled: boolean;
+  packets: string;
+  length: string;
+  interval: string;
+}
+
+export interface DoctorCheck {
+  id: string;
+  ok: boolean;
+  detail: string;
 }
 
 export interface DnsResult {

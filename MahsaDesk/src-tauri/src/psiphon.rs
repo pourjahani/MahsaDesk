@@ -115,12 +115,14 @@ pub fn spawn_tunnel(
     let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&cfg_path, text).map_err(|e| e.to_string())?;
 
-    let mut child = Command::new(exe_path)
-        .arg("-config")
+    let mut cmd = Command::new(exe_path);
+    cmd.arg("-config")
         .arg(&cfg_path)
         .current_dir(workdir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::proc::hide(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot start psiphon-tunnel-core: {}", e))?;
     let pid = child.id();
@@ -147,9 +149,20 @@ pub fn spawn_tunnel(
     }
     push_log(logs, area, format!("[psiphon] tunnel-core started, pid={}", pid));
 
-    // fail fast if the binary exits immediately
-    std::thread::sleep(Duration::from_millis(500));
-    if let Some(status) = child.try_wait().ok().flatten() {
+    // fail fast if the binary exits immediately (poll instead of a blind sleep)
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    let mut early = None;
+    while std::time::Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                early = Some(status);
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+            Err(_) => break,
+        }
+    }
+    if let Some(status) = early {
         return Err(format!(
             "psiphon-tunnel-core exited immediately: {} (check that the exe is valid; see logs)",
             status

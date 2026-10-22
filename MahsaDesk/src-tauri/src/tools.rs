@@ -435,10 +435,10 @@ pub struct NetToolOutput {
 
 #[cfg(windows)]
 fn windows_tool(exe: &str, args: &[&str]) -> NetToolOutput {
-    let out = std::process::Command::new(exe)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args);
+    crate::proc::hide(&mut cmd);
+    let out = cmd.output().map_err(|e| e.to_string());
     match out {
         Ok(o) => {
             let text = String::from_utf8_lossy(&o.stdout).to_string()

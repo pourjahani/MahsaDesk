@@ -1,3 +1,4 @@
+use crate::proc;
 use crate::servers::ServerProfile;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -64,21 +65,7 @@ pub fn build_singbox_config_native(server: &ServerProfile, per_app_mode: &str, p
     let mut rules = per_app_rules(per_app_mode, per_app_list);
     rules.push(json!({"protocol": "dns", "outbound": "dns-out"}));
     rules.push(json!({"ip_is_private": true, "outbound": "direct-out"}));
-    let mut outbound = json!({
-        "type": "hysteria2",
-        "tag": "socks-out",
-        "server": server.address,
-        "server_port": server.port,
-        "password": server.auth
-    });
-    if !server.sni.is_empty() {
-        outbound["tls"] = json!({"enabled": true, "server_name": server.sni, "insecure": true});
-    } else {
-        outbound["tls"] = json!({"enabled": true, "insecure": true});
-    }
-    if !server.method.is_empty() {
-        outbound["obfs"] = json!({"type": "salamander", "password": server.encryption});
-    }
+    let outbound = crate::hy2::hysteria2_outbound(server, "socks-out");
     json!({
         "log": {"level": "info"},
         "dns": {
@@ -126,10 +113,10 @@ pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &Path
         cfg_path.to_string_lossy().replace('\\', "\\\\"),
         workdir.to_string_lossy().replace('\\', "\\\\")
     );
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps]);
+    proc::hide(&mut cmd);
+    let out = cmd.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "TUN start failed: {}",
@@ -143,10 +130,10 @@ pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &Path
 #[allow(dead_code)]
 pub fn stop_tun_elevated() -> Result<(), String> {
     let ps = "Start-Process -FilePath 'taskkill.exe' -ArgumentList '/IM','sing-box.exe','/F' -Verb RunAs -WindowStyle Hidden";
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", ps])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", ps]);
+    proc::hide(&mut cmd);
+    let out = cmd.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "TUN stop failed: {}",

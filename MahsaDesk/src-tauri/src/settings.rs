@@ -49,6 +49,13 @@ pub struct Settings {
     // Domain fronting (fake host)
     pub front_enabled: bool,
     pub front_host: String,      // CDN domain to connect to
+    // Local subscription sharing (#16)
+    pub share_port: u16,         // default 18081
+    pub share_lan: bool,         // false = loopback only
+    // First-run wizard (#24): None until decided. `load` resolves a missing
+    // settings file (fresh install) to false and an existing file without the
+    // key (upgrade from an older version) to true, so upgrades are never nagged.
+    pub wizard_done: Option<bool>,
 }
 
 impl Default for Settings {
@@ -94,6 +101,9 @@ impl Default for Settings {
             ech_config: String::new(),
             front_enabled: false,
             front_host: String::new(),
+            share_port: 18081,
+            share_lan: false,
+            wizard_done: None,
         }
     }
 }
@@ -102,8 +112,21 @@ impl Settings {
     pub fn load(dir: &PathBuf) -> Settings {
         let path = dir.join("settings.json");
         match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-            Err(_) => Settings::default(),
+            Ok(text) => {
+                let mut s: Settings = serde_json::from_str(&text).unwrap_or_default();
+                if s.wizard_done.is_none() {
+                    // The settings file already existed: not a first run
+                    // (upgrade from an older version, or a corrupt file).
+                    s.wizard_done = Some(true);
+                }
+                s
+            }
+            Err(_) => {
+                let mut s = Settings::default();
+                // No settings file at all: this is a fresh install.
+                s.wizard_done = Some(false);
+                s
+            }
         }
     }
 
@@ -121,5 +144,40 @@ impl Settings {
             .filter(|l| !l.is_empty())
             .map(|l| format!("domain:{}", l))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mahsa-wizard-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn fresh_install_asks_for_the_wizard() {
+        let d = tmp("fresh");
+        assert_eq!(Settings::load(&d).wizard_done, Some(false));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn upgrade_without_the_flag_never_nags() {
+        let d = tmp("upgrade");
+        fs::write(d.join("settings.json"), "{\"language\":\"fa\"}").unwrap();
+        assert_eq!(Settings::load(&d).wizard_done, Some(true));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn recorded_choice_is_kept() {
+        let d = tmp("recorded");
+        fs::write(d.join("settings.json"), "{\"wizard_done\":false}").unwrap();
+        assert_eq!(Settings::load(&d).wizard_done, Some(false));
+        let _ = fs::remove_dir_all(&d);
     }
 }

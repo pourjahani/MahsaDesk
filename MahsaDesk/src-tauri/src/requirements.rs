@@ -39,13 +39,14 @@ pub struct ReqInfo {
     pub installed_version: Option<String>,
     pub available_version: Option<String>,
     pub update_available: bool,
+    /// File hash matches the pinned `.sha` marker written at install time.
+    pub verified: bool,
 }
 
 fn exe_version(path: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new(path)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(path);
+    cmd.args(args);
+    let out = crate::proc::output(cmd).ok()?;
     let text = String::from_utf8_lossy(&out.stdout).to_string()
         + &String::from_utf8_lossy(&out.stderr);
     Some(text.lines().next().unwrap_or("").trim().to_string())
@@ -94,6 +95,74 @@ fn sha_marker(dir: &Path) -> PathBuf {
     dir.join("psiphon-tunnel-core.sha")
 }
 
+// ---------------------------------------------------------------------------
+// Integrity verification (#25): pinned hash markers + GitHub asset digests
+// ---------------------------------------------------------------------------
+
+pub fn sha256_bytes(data: &[u8]) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn sha256_file(path: &Path) -> Option<String> {
+    use sha2::Digest;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Git blob object id of a file: sha1("blob <len>\\0" + bytes) — the same
+/// hash the GitHub contents API reports, used for the rolling Psiphon engine.
+pub fn git_blob_sha1(data: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update(format!("blob {}\0", data.len()).as_bytes());
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
+fn marker_path(file: &Path) -> PathBuf {
+    let mut s = file.as_os_str().to_owned();
+    s.push(".sha");
+    PathBuf::from(s)
+}
+
+fn write_marker(file: &Path, sha256_hex: &str) {
+    let _ = std::fs::write(
+        marker_path(file),
+        format!("sha256:{}", sha256_hex),
+    );
+}
+
+/// True when the file exists and its sha256 matches its pinned marker.
+fn marker_verified(dir: &Path, name: &str) -> bool {
+    let file = dir.join(name);
+    let Ok(marker) = std::fs::read_to_string(marker_path(&file)) else {
+        return false;
+    };
+    match marker.trim().strip_prefix("sha256:") {
+        Some(expected) => sha256_file(&file).map(|h| h == expected).unwrap_or(false),
+        None => false,
+    }
+}
+
+/// Psiphon markers predate the sha256 scheme: they hold the git blob sha.
+fn psiphon_marker_verified(dir: &Path) -> bool {
+    let Ok(marker) = std::fs::read_to_string(sha_marker(dir)) else {
+        return false;
+    };
+    let expected = marker.trim();
+    if expected.is_empty() {
+        return false;
+    }
+    std::fs::read(dir.join(crate::psiphon::EXE_NAME))
+        .map(|b| git_blob_sha1(&b) == expected)
+        .unwrap_or(false)
+}
+
 /// Installed vs available status for one requirement.
 pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInfo {
     let mut info = match key {
@@ -110,6 +179,7 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
                 installed_version: ver,
                 available_version: None,
                 update_available: false,
+                verified: false,
             };
             if remote {
                 let tag = github_latest_tag(XRAY_REPO).await;
@@ -134,6 +204,7 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
                 installed_version: ver,
                 available_version: Some(SINGBOX_PINNED.into()),
                 update_available: false,
+                verified: false,
             };
             // pinned channel: flag it only when the build target differs
             if !exists
@@ -160,6 +231,7 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
                 installed_version: None,
                 available_version: Some("0.14.1".into()),
                 update_available: !exists,
+                verified: false,
             }
         }
         "geo" => {
@@ -179,6 +251,7 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
                 installed_version: None,
                 available_version: None,
                 update_available: true, // refreshing data is always an option
+                verified: false,
             }
         }
         "psiphon" => {
@@ -195,6 +268,7 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
                 installed_version: None,
                 available_version: None,
                 update_available: false,
+                verified: false,
             };
             if exists {
                 // tolerant wrapper: report the probed version if there is one
@@ -220,11 +294,22 @@ pub async fn check_requirement(dir: &PathBuf, key: &str, remote: bool) -> ReqInf
             installed_version: None,
             available_version: None,
             update_available: false,
+            verified: false,
         },
     };
     if !info.exists {
         info.update_available = true;
     }
+    // #25: green badge only when the on-disk hash matches the pinned marker
+    info.verified = info.exists
+        && match key {
+            "xray" => marker_verified(dir, "xray.exe"),
+            "singbox" => marker_verified(dir, "sing-box.exe"),
+            "wintun" => marker_verified(dir, "wintun.dll"),
+            "geo" => marker_verified(dir, "geoip.dat") && marker_verified(dir, "geosite.dat"),
+            "psiphon" => psiphon_marker_verified(dir),
+            _ => false,
+        };
     info
 }
 
@@ -257,13 +342,65 @@ fn unzip_member(zip_path: &Path, wanted: &dyn Fn(&str) -> bool, dst: &Path) -> R
     Err(format!("member matching pattern not found in {}", zip_path.display()))
 }
 
-async fn download_to_file(url: &str, dst: &Path) -> Result<(), String> {
+// ---------------------------------------------------------------------------
+// Integrity verification (#25)
+// ---------------------------------------------------------------------------
+
+/// GitHub release asset digest ("sha256:..." published by the API since
+/// 2025) for one asset of a release — `tag` None means "latest".
+pub async fn github_asset_digest(
+    repo: &str,
+    tag: Option<&str>,
+    asset_name: &str,
+) -> Option<String> {
+    let url = match tag {
+        Some(t) => format!("https://api.github.com/repos/{}/releases/tags/{}", repo, t),
+        None => format!("https://api.github.com/repos/{}/releases/latest", repo),
+    };
+    let v: serde_json::Value = http().get(&url).send().await.ok()?.json().await.ok()?;
+    let assets = v.get("assets")?.as_array()?;
+    let digest = assets
+        .iter()
+        .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(asset_name))?
+        .get("digest")
+        .and_then(|d| d.as_str())?;
+    if digest.is_empty() {
+        return None;
+    }
+    Some(digest.trim_start_matches("sha256:").to_lowercase())
+}
+
+/// Download `url`; when the publisher exposes an expected sha256, refuse
+/// anything that doesn't match it. Returns the raw bytes either way.
+pub async fn fetch_verified(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
     let resp = http().get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {} from {}", resp.status(), url));
     }
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    std::fs::write(dst, &bytes).map_err(|e| e.to_string())
+    let actual = sha256_bytes(&bytes);
+    if let Some(expected) = expected_sha256 {
+        if !expected.eq_ignore_ascii_case(&actual) {
+            return Err(format!(
+                "integrity check failed for {}: expected sha256 {}, got {}",
+                url, expected, actual
+            ));
+        }
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Split a GitHub release download URL into (repo, tag, asset name) so we can
+/// ask the API for that exact asset's digest.
+fn gh_asset_locus(zip_url: &str) -> Option<(String, Option<String>, String)> {
+    let rest = zip_url.strip_prefix("https://github.com/")?;
+    let (repo, tail) = rest.split_once("/releases/")?;
+    let asset = zip_url.rsplit('/').next()?.to_string();
+    let tag = tail
+        .strip_prefix("download/")
+        .and_then(|t| t.split('/').next())
+        .map(|t| t.to_string());
+    Some((repo.to_string(), tag, asset))
 }
 
 struct ZipFetch {
@@ -305,13 +442,23 @@ fn source_for(key: &str) -> Result<Option<ZipFetch>, String> {
 /// sha marker so future upgrades can detect changes.
 pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
     match key {
+        // Psiphon publishes the git blob sha of the rolling engine binary:
+        // downloaded bytes must hash to exactly that before we keep them.
         "psiphon" => {
-            let dst = dir.join("psiphon-tunnel-core.exe");
-            download_to_file(PSIPHON_BASE_URL, &dst).await?;
-            let sha = psiphon_engine_sha().await;
-            if let Some(sha) = sha {
-                let _ = std::fs::write(sha_marker(dir), sha);
+            let dst = dir.join(crate::psiphon::EXE_NAME);
+            let bytes = fetch_verified(PSIPHON_BASE_URL, None).await?;
+            let local_sha = git_blob_sha1(&bytes);
+            if let Some(remote) = psiphon_engine_sha().await {
+                if remote.trim() != local_sha {
+                    return Err(format!(
+                        "Psiphon integrity check failed: published {} != downloaded {}",
+                        remote.trim(),
+                        local_sha
+                    ));
+                }
             }
+            std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
+            let _ = std::fs::write(sha_marker(dir), &local_sha);
         }
         "geo" => {
             for (fname, url) in [
@@ -324,19 +471,37 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
                     "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
                 ),
             ] {
-                download_to_file(url, &dir.join(fname)).await?;
+                let expected =
+                    github_asset_digest("Loyalsoldier/v2ray-rules-dat", None, fname).await;
+                let bytes = fetch_verified(url, expected.as_deref()).await?;
+                let dst = dir.join(fname);
+                let hash = sha256_bytes(&bytes);
+                std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
+                write_marker(&dst, &hash);
             }
         }
         other => {
             let Some(ZipFetch { zip_url, zip_member }) = source_for(other)? else {
                 return Err(format!("no download source for {}", other));
             };
+            // verify the archive against the release asset digest when GitHub
+            // publishes one, then pin the extracted file's own hash
+            let expected = match gh_asset_locus(&zip_url) {
+                Some((repo, tag, asset)) => {
+                    github_asset_digest(&repo, tag.as_deref(), &asset).await
+                }
+                None => None,
+            };
+            let bytes = fetch_verified(&zip_url, expected.as_deref()).await?;
             let tmp = std::env::temp_dir().join(format!("mahsareq-{}-{}.zip", other, std::process::id()));
-            download_to_file(&zip_url, &tmp).await?;
+            std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
             let dst = dir.join(zip_member.as_str());
             unzip_member(&tmp, &|n: &str| {
                 n.ends_with(&zip_member) || n == zip_member
             }, &dst)?;
+            if let Some(hash) = sha256_file(&dst) {
+                write_marker(&dst, &hash);
+            }
             let _ = std::fs::remove_file(&tmp);
         }
     }
@@ -507,5 +672,38 @@ mod tests {
     fn release_beats_prerelease_of_same_version() {
         assert!(is_newer("0.3.1", "0.3.1-rc2"));
         assert!(!is_newer("0.3.1-rc1", "0.3.1"));
+    }
+
+    #[test]
+    fn sha256_of_empty_is_known_vector() {
+        assert_eq!(
+            sha256_bytes(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn git_blob_sha1_matches_git_hash_object() {
+        // $ echo -n $'hello\n' | git hash-object --stdin
+        assert_eq!(git_blob_sha1(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
+    }
+
+    #[test]
+    fn gh_asset_locus_parses_release_urls() {
+        let (repo, tag, asset) = gh_asset_locus(
+            "https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-windows-amd64.zip",
+        )
+        .unwrap();
+        assert_eq!(repo, "SagerNet/sing-box");
+        assert_eq!(tag.as_deref(), Some("v1.10.7"));
+        assert_eq!(asset, "sing-box-1.10.7-windows-amd64.zip");
+
+        let (repo, tag, asset) = gh_asset_locus(
+            "https://github.com/GFW-knocker/Xray-core/releases/latest/download/Xray-windows-64.zip",
+        )
+        .unwrap();
+        assert_eq!(repo, "GFW-knocker/Xray-core");
+        assert_eq!(tag, None);
+        assert_eq!(asset, "Xray-windows-64.zip");
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mahsadesk"
-version = "0.3.4"
+version = "0.3.5"
 description = "MahsaDesk - free v2ray/xray client for Windows"
 authors = ["MahsaDesk"]
 edition = "2021"
@@ -24,6 +24,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 urlencoding = "2"
 rand = "0.8"
+sha2 = "0.10"
+sha1 = "0.10"
+# Clash subscriptions are YAML; 0.9 is deprecated-but-frozen and does exactly
+# what the #15 importer needs (parse to Value and walk).
+serde_yaml = "0.9"
 
 
 [profile.release]

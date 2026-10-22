@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo, type DoctorCheck, type ShareInfo } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,7 @@ function icon(name: string): HTMLElement {
   span.className = "ph";
   const icons: Record<string, string> = {
     servers: '<path d="M4 6h16M4 12h16M4 18h10" stroke-width="2.4" stroke-linecap="round"/>',
+    share: '<path d="M10 14a4 4 0 0 1 0-5.7l2-2a4 4 0 0 1 5.7 5.7l-1 1M14 10a4 4 0 0 1 0 5.7l-2 2a4 4 0 0 1-5.7-5.7l1-1" fill="none" stroke-width="2.2" stroke-linecap="round"/>',
     routing: '<path d="M4 16c4 0 4-8 8-8s4 8 8 8" fill="none" stroke-width="2.4" stroke-linecap="round"/>',
     subs: '<path d="M5 7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v12l-7-3.5L5 19V7z" fill="none" stroke-width="2.4" stroke-linejoin="round"/>',
     settings: '<circle cx="12" cy="12" r="3.2" fill="none" stroke-width="2.4"/><path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9" stroke-linecap="round" stroke-width="2.4"/>',
@@ -181,6 +182,15 @@ function switchView(v: string) {
   renderView();
 }
 
+/** Apply a language immediately: persist, repaint layout + current view. */
+function applyLang(l: Lang) {
+  setLang(l);
+  localStorage.setItem("mahsa-lang", l);
+  buildLayout();
+  renderView();
+  updateStatus();
+}
+
 // ---------------------------------------------------------------------------
 // new-release banner (startup check, requirements-card pattern)
 // ---------------------------------------------------------------------------
@@ -296,6 +306,275 @@ function delayBadge(d: number | null): HTMLElement {
   return b;
 }
 
+// ---------------------------------------------------------------------------
+// servers view state (#12 sort/filter/search, #14 bulk selection, #16 share)
+// ---------------------------------------------------------------------------
+
+let srvQuery = "";
+let srvSort = "default";
+let srvProto = "";
+let srvSub = "";
+let srvSelectMode = false;
+let srvSelected = new Set<string>();
+
+function visibleServers(): ServerProfile[] {
+  let list = servers.slice();
+  if (srvQuery.trim()) {
+    const q = srvQuery.trim().toLowerCase();
+    list = list.filter(
+      (p) =>
+        (p.remark || "").toLowerCase().includes(q) ||
+        p.address.toLowerCase().includes(q) ||
+        p.protocol.toLowerCase().includes(q)
+    );
+  }
+  if (srvProto) list = list.filter((p) => p.protocol === srvProto);
+  if (srvSub) {
+    list =
+      srvSub === "-"
+        ? list.filter((p) => !p.sub_id)
+        : list.filter((p) => p.sub_id === srvSub);
+  }
+  const far = 1_000_000_000;
+  switch (srvSort) {
+    case "delay":
+      list.sort((a, b) => (a.delay ?? far) - (b.delay ?? far));
+      break;
+    case "name":
+      list.sort((a, b) =>
+        (a.remark || a.address).localeCompare(b.remark || b.address)
+      );
+      break;
+    case "protocol":
+      list.sort(
+        (a, b) =>
+          a.protocol.localeCompare(b.protocol) ||
+          (a.remark || "").localeCompare(b.remark || "")
+      );
+      break;
+    case "sub":
+      list.sort((a, b) => a.sub_id.localeCompare(b.sub_id));
+      break;
+    case "newest":
+      list.sort((a, b) => b.id.localeCompare(a.id));
+      break;
+  }
+  return list;
+}
+
+function serverToolbar(): HTMLElement {
+  const bar = el("div", "srv-toolbar");
+  const search = el("input", "srv-search") as HTMLInputElement;
+  search.placeholder = t("servers.search");
+  search.value = srvQuery;
+  search.addEventListener("input", () => {
+    srvQuery = search.value;
+    renderView();
+    // the view is rebuilt on every keystroke: restore focus at the end
+    const again = document.querySelector(".srv-search") as HTMLInputElement | null;
+    if (again) {
+      again.focus();
+      again.setSelectionRange(again.value.length, again.value.length);
+    }
+  });
+  bar.append(search);
+
+  const sort = el("select", "srv-sort") as HTMLSelectElement;
+  for (const [k, label] of [
+    ["default", t("servers.sort.default")],
+    ["delay", t("servers.sort.delay")],
+    ["name", t("servers.sort.name")],
+    ["protocol", t("servers.sort.protocol")],
+    ["sub", t("servers.sort.sub")],
+    ["newest", t("servers.sort.newest")],
+  ] as [string, string][]) {
+    const o = el("option", "", label) as HTMLOptionElement;
+    o.value = k;
+    sort.append(o);
+  }
+  sort.value = srvSort;
+  sort.onchange = () => {
+    srvSort = sort.value;
+    renderView();
+  };
+  bar.append(sort);
+
+  // protocol filter chips (#12)
+  const protos = [...new Set(servers.map((p) => p.protocol))].sort();
+  for (const proto of protos) {
+    const chip = el(
+      "button",
+      `chip filter-chip ${srvProto === proto ? "on" : ""}`,
+      proto
+    );
+    chip.onclick = () => {
+      srvProto = srvProto === proto ? "" : proto;
+      renderView();
+    };
+    bar.append(chip);
+  }
+
+  // subscription filter
+  const subSel = el("select", "srv-sort") as HTMLSelectElement;
+  const allOpt = el("option", "", t("servers.filter.allSubs")) as HTMLOptionElement;
+  allOpt.value = "";
+  subSel.append(allOpt);
+  const manualOpt = el("option", "", t("servers.filter.manual")) as HTMLOptionElement;
+  manualOpt.value = "-";
+  subSel.append(manualOpt);
+  for (const s of subs) {
+    const o = el("option", "", s.name) as HTMLOptionElement;
+    o.value = s.id;
+    subSel.append(o);
+  }
+  subSel.value = srvSub;
+  subSel.onchange = () => {
+    srvSub = subSel.value;
+    renderView();
+  };
+  bar.append(subSel);
+
+  return bar;
+}
+
+function bulkBar(): HTMLElement {
+  const bar = el("div", "bulk-bar");
+  const ids = [...srvSelected];
+  const shown = visibleServers();
+  bar.append(
+    el(
+      "span",
+      "bulk-count",
+      t("servers.selectedCount").replace("{n}", String(ids.length))
+    )
+  );
+
+  const btnAll = el("button", "btn", t("servers.selectAll"));
+  btnAll.onclick = () => {
+    for (const p of shown) srvSelected.add(p.id);
+    renderView();
+  };
+  const btnNone = el("button", "btn ghost", t("servers.clearSelection"));
+  btnNone.onclick = () => {
+    srvSelected.clear();
+    renderView();
+  };
+  const btnTest = el("button", "btn", t("servers.testSelected"));
+  btnTest.disabled = ids.length === 0;
+  btnTest.onclick = async () => {
+    btnTest.disabled = true;
+    for (const id of ids) {
+      await api.testDelay(id);
+    }
+    servers = await api.listServers();
+    renderView();
+  };
+  const btnExport = el("button", "btn", t("servers.exportSelected"));
+  btnExport.disabled = ids.length === 0;
+  btnExport.onclick = async () => {
+    try {
+      const links = await api.exportLinks(ids);
+      await navigator.clipboard.writeText(links.join("\n"));
+      btnExport.textContent = t("servers.copied");
+      setTimeout(() => {
+        btnExport.textContent = t("servers.exportSelected");
+      }, 1500);
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+  };
+  const btnDel = el("button", "btn danger", t("servers.deleteSelected"));
+  btnDel.disabled = ids.length === 0;
+  btnDel.onclick = async () => {
+    if (!confirm(t("servers.deleteConfirm").replace("{n}", String(ids.length)))) {
+      return;
+    }
+    await api.deleteServers(ids);
+    srvSelected.clear();
+    servers = await api.listServers();
+    renderView();
+  };
+  bar.append(btnAll, btnNone, btnTest, btnExport, btnDel);
+  return bar;
+}
+
+/** Share the pool as a subscription URL (#16): start form or live endpoint. */
+async function shareDialog() {
+  const info = await api.shareStatus().catch(() => null);
+  const dlg = el("div", "modal-back");
+  const box = el("div", "modal");
+  box.append(el("h2", "", t("servers.share")));
+
+  if (info) {
+    box.append(el("p", "mono share-url", info.url));
+    const img = el("img", "qr-img") as HTMLImageElement;
+    img.style.display = "none";
+    box.append(img);
+    try {
+      const QR = (await import("qrcode")).default;
+      img.src = await QR.toDataURL(info.url, { width: 260, margin: 1 });
+      img.style.display = "";
+    } catch {
+      // QR rendering is optional; the URL below is always copyable
+    }
+    box.append(el("p", "muted", t("share.note")));
+    const row = el("div", "modal-actions");
+    const copy = el("button", "btn primary", t("servers.copy"));
+    copy.onclick = async () => {
+      await navigator.clipboard.writeText(info.url);
+      copy.textContent = t("servers.copied");
+    };
+    const stop = el("button", "btn", t("share.stop"));
+    stop.onclick = async () => {
+      await api.shareStop();
+      dlg.remove();
+    };
+    const close = el("button", "btn ghost", t("servers.cancel"));
+    close.onclick = () => dlg.remove();
+    row.append(copy, stop, close);
+    box.append(row);
+  } else {
+    const form = el("div", "form");
+    const pf = el("div", "field");
+    pf.append(el("label", "", t("share.port")));
+    const port = el("input") as HTMLInputElement;
+    port.type = "number";
+    port.value = String(settings?.share_port ?? 18081);
+    pf.append(port);
+    const lanRow = el("div", "switch-row");
+    lanRow.append(el("span", "", t("share.lan")));
+    const sw = el("button", `switch ${settings?.share_lan ? "on" : ""}`);
+    let lan = !!settings?.share_lan;
+    sw.onclick = () => {
+      lan = !lan;
+      sw.className = `switch ${lan ? "on" : ""}`;
+    };
+    lanRow.append(sw);
+    form.append(pf, lanRow);
+    box.append(form, el("p", "muted", t("share.startNote")));
+    const row = el("div", "modal-actions");
+    const cancel = el("button", "btn ghost", t("servers.cancel"));
+    cancel.onclick = () => dlg.remove();
+    const start = el("button", "btn primary", t("share.start"));
+    start.onclick = async () => {
+      try {
+        const p = Math.max(1, Math.min(65535, Number(port.value || 18081)));
+        await save({ share_port: p, share_lan: lan });
+        await api.shareStart(p, lan);
+        dlg.remove();
+        shareDialog();
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+      }
+    };
+    row.append(cancel, start);
+    box.append(row);
+  }
+
+  dlg.append(box);
+  document.body.append(dlg);
+}
+
 function renderServers() {
   const wrap = el("div", "view");
   const head = el("div", "view-head");
@@ -338,9 +617,26 @@ function renderServers() {
     }
     btnValidate.disabled = false;
   };
-  actions.append(btnImport, btnPing, btnReal, btnValidate);
+  // #16 share + #14 selection toggle
+  const btnShare = el("button", "btn", t("servers.share"));
+  btnShare.prepend(icon("share"));
+  btnShare.onclick = () => shareDialog();
+  const btnSelect = el(
+    "button",
+    `btn ${srvSelectMode ? "primary" : ""}`,
+    srvSelectMode ? t("servers.cancelSelect") : t("servers.select")
+  );
+  btnSelect.prepend(icon("check"));
+  btnSelect.onclick = () => {
+    srvSelectMode = !srvSelectMode;
+    srvSelected.clear();
+    renderView();
+  };
+  actions.append(btnImport, btnPing, btnReal, btnValidate, btnShare, btnSelect);
   head.append(actions);
   wrap.append(head);
+  wrap.append(serverToolbar());
+  if (srvSelectMode) wrap.append(bulkBar());
 
   const activeId = settings?.active_server || "";
   if (servers.length === 0) {
@@ -349,10 +645,30 @@ function renderServers() {
     return;
   }
 
+  const shown = visibleServers();
+  if (shown.length === 0) {
+    wrap.append(el("div", "empty", t("servers.noMatches")));
+    mainEl.append(wrap);
+    return;
+  }
+
   const list = el("div", "server-list");
-  for (const p of servers) {
+  for (const p of shown) {
     const item = el("div", "server-row");
     if (p.id === activeId) item.classList.add("active");
+
+    if (srvSelectMode) {
+      const cb = el("input", "srv-check") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.checked = srvSelected.has(p.id);
+      cb.onclick = (ev: Event) => {
+        ev.stopPropagation();
+        if (cb.checked) srvSelected.add(p.id);
+        else srvSelected.delete(p.id);
+        renderView();
+      };
+      item.append(cb);
+    }
 
     const info = el("div", "srv-info");
     const top = el("div", "srv-top");
@@ -428,6 +744,7 @@ function renderServers() {
     right.append(btnPing, btnReal, btnQr, btnCopy, btnUse, btnEdit, btnDel);
     item.append(info, right);
     item.addEventListener("dblclick", async () => {
+      if (srvSelectMode) return;
       await api.setActive(p.id);
       settings = await api.getSettings();
       await doConnect("system");
@@ -608,6 +925,54 @@ function editDialog(p: ServerProfile) {
 // subscriptions view
 // ---------------------------------------------------------------------------
 
+/**
+ * #10: curated community sources. Every URL below was fetched and confirmed
+ * to return real share-link payloads, with commits within the last months
+ * (checked 2026-10-22). MahsaNet's own per-ISP feeds come first.
+ */
+const COMMUNITY_SOURCES: { name: string; url: string }[] = [
+  {
+    name: "MahsaNet MCI",
+    url: "https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mci/sub_1.txt",
+  },
+  {
+    name: "MahsaNet Irancell (MTN)",
+    url: "https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt",
+  },
+  {
+    name: "0xRadikal top 100",
+    url: "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt",
+  },
+  {
+    name: "0xRadikal verified",
+    url: "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt",
+  },
+  {
+    name: "MatinGhanbari all protocols",
+    url: "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
+  },
+  {
+    name: "MatinGhanbari super",
+    url: "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt",
+  },
+  {
+    name: "MatinGhanbari VLESS",
+    url: "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/filtered/subs/vless.txt",
+  },
+  {
+    name: "MatinGhanbari Hysteria2",
+    url: "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/filtered/subs/hysteria2.txt",
+  },
+  {
+    name: "barry-far Sub1",
+    url: "https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub1.txt",
+  },
+  {
+    name: "MahanKenway mix",
+    url: "https://raw.githubusercontent.com/MahanKenway/Freedom-V2Ray/main/configs/mix_sub.txt",
+  },
+];
+
 function renderSubs() {
   const wrap = el("div", "view");
   const head = el("div", "view-head");
@@ -643,6 +1008,74 @@ function renderSubs() {
   actions.append(btnImportClip);
   head.append(actions);
   wrap.append(head);
+
+  // #10: community sources card - works even on a fresh install (shown above
+  // the empty state so new users get servers in one tap)
+  const comm = el("div", "card");
+  comm.append(el("h2", "", t("subs.communityTitle")));
+  comm.append(el("p", "muted", t("subs.communityNote")));
+  const commList = el("div", "lines");
+  for (const src of COMMUNITY_SOURCES) {
+    const row = el("div", "switch-row");
+    const info = el("div", "srv-info");
+    info.append(
+      el("span", "srv-name", src.name),
+      el("div", "srv-meta", src.url)
+    );
+    row.append(info);
+    const already = subs.some((s) => s.url === src.url);
+    const btn = el(
+      "button",
+      "btn",
+      already ? t("subs.added") : t("subs.addOne")
+    );
+    btn.disabled = already;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = t("requirements.updating");
+      try {
+        await api.addSubscription(src.name, src.url, 12, true);
+        await refreshData();
+        renderView();
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+        btn.disabled = false;
+        btn.textContent = t("subs.addOne");
+      }
+    };
+    row.append(btn);
+    commList.append(row);
+  }
+  comm.append(commList);
+  const missingSources = COMMUNITY_SOURCES.filter(
+    (c) => !subs.some((s) => s.url === c.url)
+  );
+  if (missingSources.length > 0) {
+    const addAll = el("button", "btn primary", t("subs.addAll"));
+    addAll.onclick = async () => {
+      addAll.disabled = true;
+      addAll.textContent = t("requirements.updating");
+      try {
+        for (const src of missingSources) {
+          await api.addSubscription(src.name, src.url, 12, false);
+        }
+        const fresh = await api.listSubscriptions();
+        for (const s of fresh.filter((x) =>
+          missingSources.some((m) => m.url === x.url)
+        )) {
+          await api.updateSubscription(s.id).catch(() => 0);
+        }
+        await refreshData();
+        renderView();
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+        addAll.disabled = false;
+        addAll.textContent = t("subs.addAll");
+      }
+    };
+    comm.append(addAll);
+  }
+  wrap.append(comm);
 
   if (subs.length === 0) {
     wrap.append(el("div", "empty", t("subs.none")));
@@ -827,6 +1260,55 @@ function renderRouting() {
   card1.append(selWrap);
   wrap.append(card1);
 
+  // #22: per-ISP anti-filtering presets (honest about what they change)
+  const ispCard = el("div", "card");
+  ispCard.append(el("h2", "", t("isp.title")));
+  ispCard.append(el("p", "muted", t("isp.note")));
+  const ispRow = el("div", "actions");
+  api
+    .myIp()
+    .then(async (info: any) => {
+      const id = await api.detectIsp(String(info?.isp ?? ""), String(info?.org ?? ""));
+      if (id && currentView === "routing") {
+        const chip = el("span", "badge mid", `${t("isp.detected")}: ${t("isp." + id)}`);
+        ispRow.prepend(chip);
+      }
+    })
+    .catch(() => { /* offline: no preselect */ });
+  api.ispPresets().then((presets) => {
+    for (const p of presets) {
+      const b = el("button", "btn", t("isp." + p.id));
+      b.title = t("isp.tip" + p.id.charAt(0).toUpperCase() + p.id.slice(1));
+      const active =
+        !!settings &&
+        settings.fragment_enabled === p.fragment_enabled &&
+        settings.fragment_packets === p.packets &&
+        settings.fragment_length === p.length &&
+        settings.fragment_interval === p.interval;
+      if (active) b.classList.add("primary");
+      b.onclick = async () => {
+        await save({
+          fragment_enabled: p.fragment_enabled,
+          fragment_packets: p.packets,
+          fragment_length: p.length,
+          fragment_interval: p.interval,
+        });
+        toast(t("isp.applied").replace("{n}", t("isp." + p.id)));
+        renderView();
+      };
+      ispRow.append(b);
+    }
+  });
+  ispCard.append(ispRow);
+  const fragNow = el("p", "muted mono");
+  fragNow.textContent = `fragment: ${
+    settings?.fragment_enabled
+      ? `${settings.fragment_packets} / ${settings.fragment_length} / ${settings.fragment_interval}`
+      : "off"
+  }`;
+  ispCard.append(fragNow);
+  wrap.append(ispCard);
+
   const mkList = (title: string, key: keyof Settings) => {
     const card = el("div", "card");
     card.append(el("h2", "", title));
@@ -880,13 +1362,29 @@ async function save(patch: Partial<Settings>) {
 // requirements card (check + upgrade engines)
 // ---------------------------------------------------------------------------
 
+/** Engine files are locked while cores run: ask, disconnect, then upgrade. */
+async function confirmEngineUpdate(): Promise<boolean> {
+  try {
+    const st = await api.status();
+    if (st.running) {
+      if (!confirm(t("requirements.disconnectPrompt"))) return false;
+      await api.disconnect();
+      updateStatus();
+    }
+  } catch {
+    // status unavailable: let the backend enforce its own guard
+  }
+  return true;
+}
+
 async function renderRequirementsCard(wrap: HTMLElement) {
   const card = el("div", "card");
   card.append(el("h2", "", t("requirements.title")));
   card.append(el("p", "muted", t("requirements.note")));
   const checkRow = el("div", "actions");
   const checkBtn = el("button", "btn primary", t("requirements.check"));
-  checkRow.append(checkBtn);
+  const allBtn = el("button", "btn", t("requirements.updateAll"));
+  checkRow.append(checkBtn, allBtn);
   card.append(checkRow);
   const list = el("div", "lines") as HTMLElement;
   card.append(list);
@@ -901,6 +1399,13 @@ async function renderRequirementsCard(wrap: HTMLElement) {
       right.append(
         el("span", `badge ${it.exists ? "ok" : "fail"}`, it.exists ? t("requirements.ok") : t("requirements.missing"))
       );
+      // #25: green badge when the on-disk hash matches the pinned marker
+      if (it.exists) {
+        const v = el("span", `badge ${it.verified ? "ok" : ""}`);
+        v.textContent = it.verified ? `✓ ${t("requirements.verified")}` : t("requirements.notVerified");
+        v.title = it.verified ? t("requirements.verifiedTitle") : t("requirements.notVerifiedTitle");
+        right.append(v);
+      }
       if (it.exists && it.installed_version) {
         right.append(el("span", "badge", `${t("requirements.version")} ${it.installed_version.slice(0, 40)}`));
       }
@@ -910,13 +1415,14 @@ async function renderRequirementsCard(wrap: HTMLElement) {
       if (it.exists) {
         right.append(el("span", "badge", fmtBytes(it.size)));
       }
-      const btn = el("button", "btn", it.exists ? t("requirements.upgrade") : t("requirements.upgrade"));
+      const btn = el("button", "btn", t("requirements.upgrade"));
       btn.onclick = async () => {
+        if (!(await confirmEngineUpdate())) return;
         btn.disabled = true;
         btn.textContent = t("requirements.updating");
         try {
           await api.requirementsUpgrade(it.key);
-          paint(await api.requirementsStatus());
+          paint(await api.requirementsStatus(false));
         } catch (e: any) {
           alert(`${t("error")}: ${e}`);
           btn.disabled = false;
@@ -929,22 +1435,81 @@ async function renderRequirementsCard(wrap: HTMLElement) {
     }
     checkBtn.disabled = false;
     checkBtn.textContent = t("requirements.check");
+    allBtn.disabled = false;
+    allBtn.textContent = t("requirements.updateAll");
   };
 
-  const runCheck = async () => {
+  // remote=false: local presence + pinned hashes only (no GitHub rate limit);
+  // the Check button performs the upstream comparison.
+  const runCheck = async (remote: boolean) => {
     checkBtn.disabled = true;
     checkBtn.textContent = t("requirements.checking");
     try {
-      paint(await api.requirementsStatus());
+      paint(await api.requirementsStatus(remote));
     } catch (e: any) {
       alert(`${t("error")}: ${e}`);
       checkBtn.disabled = false;
       checkBtn.textContent = t("requirements.check");
     }
   };
-  checkBtn.onclick = () => runCheck();
-  // initial status fetch (local presence + remote versions)
-  runCheck();
+  checkBtn.onclick = () => runCheck(true);
+
+  allBtn.onclick = async () => {
+    allBtn.disabled = true;
+    allBtn.textContent = t("requirements.checking");
+    try {
+      const items = await api.requirementsStatus(true);
+      const todo = items.filter((i) => i.update_available || !i.exists);
+      if (todo.length === 0) {
+        alert(t("requirements.updated"));
+      } else if (await confirmEngineUpdate()) {
+        allBtn.textContent = t("requirements.updating");
+        for (const it of todo) {
+          try {
+            await api.requirementsUpgrade(it.key);
+          } catch (e: any) {
+            alert(`${t("error")}: ${e}`);
+            break;
+          }
+        }
+      }
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+    runCheck(false);
+  };
+
+  runCheck(false);
+}
+
+/** App self-update card on the Engines view. */
+async function renderAppUpdateCard(wrap: HTMLElement) {
+  const card = el("div", "card");
+  card.append(el("h2", "", t("update.appTitle")));
+  const info = el("p", "muted", "...");
+  card.append(info);
+  const actions = el("div", "actions");
+  card.append(actions);
+  wrap.append(card);
+  try {
+    const u = updateInfo ?? (await api.appUpdateCheck());
+    updateInfo = u;
+    if (u.update_available) {
+      info.textContent = `${t("update.current")}: ${u.current_version}  ->  ${t("update.latest")}: ${u.latest_version}`;
+      if (u.download_url) {
+        const dl = el("button", "btn primary", t("update.download"));
+        dl.onclick = () => openExternal(u.download_url);
+        actions.append(dl);
+      }
+    } else {
+      info.textContent = `${t("update.current")}: ${u.current_version} - ${t("update.upToDate")}`;
+    }
+    const page = el("button", "btn", t("update.release"));
+    page.onclick = () => openExternal(u.release_url);
+    actions.append(page);
+  } catch {
+    info.textContent = t("update.checkFailed");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,9 +1601,15 @@ function renderAssets() {
   const head = el("div", "view-head");
   head.append(el("h1", "", t("assets.title")));
   wrap.append(head);
+
+  // engines live here now: requirements card (#25 badges) + app self-update
+  renderRequirementsCard(wrap);
+  renderAppUpdateCard(wrap);
+
   wrap.append(el("p", "muted", t("assets.note")));
 
   const card = el("div", "card");
+  card.append(el("h2", "", t("routing.geoTitle")));
   api.assetsInfo().then((info) => {
     for (const a of info) {
       const row = el("div", "switch-row");
@@ -1218,6 +1789,57 @@ function renderPsiphon() {
 // connection view (separate tab: connect button + method options)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// connection doctor (#21)
+// ---------------------------------------------------------------------------
+
+let doctorResults: DoctorCheck[] | null = null;
+let doctorBusy = false;
+
+async function runDoctor(rerender: boolean) {
+  doctorBusy = true;
+  doctorResults = null;
+  if (rerender && currentView === "connection") renderView();
+  try {
+    doctorResults = await api.connectionDoctor();
+  } catch (e: any) {
+    doctorResults = [{ id: "engine", ok: false, detail: String(e) }];
+  } finally {
+    doctorBusy = false;
+    if (rerender && currentView === "connection") renderView();
+  }
+}
+
+function doctorCard(): HTMLElement {
+  const card = el("div", "card");
+  card.append(el("h2", "", t("doctor.title")));
+  const row = el("div", "actions");
+  const btn = el("button", "btn primary", doctorBusy ? t("doctor.running") : t("doctor.run"));
+  btn.disabled = doctorBusy;
+  btn.onclick = () => runDoctor(true);
+  row.append(btn);
+  card.append(row);
+
+  const list = el("div", "lines");
+  if (doctorBusy) {
+    list.append(el("p", "muted", t("doctor.running")));
+  } else if (!doctorResults) {
+    list.append(el("p", "muted", t("doctor.hint")));
+  } else {
+    for (const c of doctorResults) {
+      const r = el("div", "switch-row");
+      r.append(
+        el("span", "", t(`doctor.check.${c.id}`)),
+        el("span", "mono doctor-detail", c.detail),
+        el("span", `badge ${c.ok ? "ok" : "fail"}`, c.ok ? "✓" : "✕")
+      );
+      list.append(r);
+    }
+  }
+  card.append(list);
+  return card;
+}
+
 function renderConnect() {
   const wrap = el("div", "view");
   const head = el("div", "view-head");
@@ -1311,6 +1933,9 @@ function renderConnect() {
       box.classList.toggle("selected", st.running && st.mode === mode);
     }
   });
+
+  // #21: connection doctor checklist
+  wrap.append(doctorCard());
 }
 
   // ---------------------------------------------------------------------------
@@ -1679,8 +2304,21 @@ function renderSettings() {
     ["en", "English"],
     ["fa", "فارسی (RTL)"],
   ];
-  // Language is never collapsed
-  general.append(mkSelect(t("settings.language"), "language", langOptions, false));
+  // Language is never collapsed; apply the change immediately too
+  general.append(
+    (() => {
+      const f = mkSelect(t("settings.language"), "language", langOptions, false);
+      const sel = f.querySelector("select") as HTMLSelectElement;
+      sel.addEventListener("change", () => {
+        const sys = (navigator.language || "en").toLowerCase();
+        const v: Lang =
+          sel.value === "fa" ? "fa" : sel.value === "en" ? "en" : sys.startsWith("fa") ? "fa" : "en";
+        if (sel.value === "auto") localStorage.removeItem("mahsa-lang");
+        applyLang(v);
+      });
+      return f;
+    })()
+  );
   general.append(
     (() => {
       const f = mkSelect(t("settings.theme"), "theme", [
@@ -1794,8 +2432,6 @@ function renderSettings() {
   pCard.append(pGrid);
   wrap.append(pCard);
 
-  renderRequirementsCard(wrap);
-
   wrap.append(el("p", "muted", t("settings.danger")));
   mainEl.append(wrap);
 }
@@ -1807,19 +2443,100 @@ function renderSettings() {
 let trafficUp = 0;
 let trafficDown = 0;
 
+// ---------------------------------------------------------------------------
+// logs view state (#23: level filter, search, copy/export, crash history)
+// ---------------------------------------------------------------------------
+
+let logLevel = ""; // "" | error | warning | info
+let logQuery = "";
+
+function logLevelOf(line: string): string {
+  const l = line.toLowerCase();
+  if (
+    /(error|failed|fatal|cannot |refused|panic|exited|denied|timed out|timeout)/.test(l)
+  ) {
+    return "error";
+  }
+  if (l.includes("warn")) return "warning";
+  return "info";
+}
+
+/** Small transient message pinned to the bottom of the window. */
+function toast(msg: string) {
+  const node = el("div", "toast", msg);
+  document.body.append(node);
+  setTimeout(() => node.remove(), 4500);
+}
+
 function renderLogs() {
   const wrap = el("div", "view");
   const head = el("div", "view-head");
   head.append(el("h1", "", t("logs.title")));
   const actions = el("div", "actions");
-  const btnClear = el("button", "btn", t("logs.clear"));
+
+  const btnCopy = el("button", "btn", t("logs.copyAll"));
+  btnCopy.onclick = async () => {
+    try {
+      const lines = await api.getLogs();
+      await navigator.clipboard.writeText(lines.join("\n"));
+      btnCopy.textContent = t("servers.copied");
+      setTimeout(() => (btnCopy.textContent = t("logs.copyAll")), 1500);
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+  };
+  const btnExport = el("button", "btn", t("logs.export"));
+  btnExport.onclick = async () => {
+    try {
+      const lines = await api.getLogs();
+      const path = await api.exportLogs(lines.join("\n"));
+      alert(`${t("logs.exported")}: ${path}`);
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
+    }
+  };
+  const btnClear = el("button", "btn ghost", t("logs.clear"));
   btnClear.onclick = async () => {
     await api.clearLogs();
-    logBox!.textContent = "";
+    renderView();
   };
-  actions.append(btnClear);
+  actions.append(btnCopy, btnExport, btnClear);
   head.append(actions);
   wrap.append(head);
+
+  // level chips + search (#23)
+  const filters = el("div", "srv-toolbar");
+  for (const [k, label] of [
+    ["", t("logs.allLevels")],
+    ["error", t("logs.levelError")],
+    ["warning", t("logs.levelWarning")],
+    ["info", t("logs.levelInfo")],
+  ] as [string, string][]) {
+    const chip = el(
+      "button",
+      `chip filter-chip ${logLevel === k ? "on" : ""}`,
+      label
+    );
+    chip.onclick = () => {
+      logLevel = k;
+      renderView();
+    };
+    filters.append(chip);
+  }
+  const search = el("input", "srv-search") as HTMLInputElement;
+  search.placeholder = t("logs.search");
+  search.value = logQuery;
+  search.addEventListener("input", () => {
+    logQuery = search.value;
+    renderView();
+    const again = document.querySelector(".srv-search") as HTMLInputElement | null;
+    if (again) {
+      again.focus();
+      again.setSelectionRange(again.value.length, again.value.length);
+    }
+  });
+  filters.append(search);
+  wrap.append(filters);
 
   const trafficCard = el("div", "card");
   trafficCard.append(el("h2", "", t("logs.session")));
@@ -1832,10 +2549,44 @@ function renderLogs() {
   trafficCard.append(trow);
   wrap.append(trafficCard);
 
+  // crash history from the core monitor (#23) - only when there is any
+  api.crashHistory().then((entries) => {
+    if (!entries || entries.length === 0) return;
+    const cCard = el("div", "card");
+    cCard.append(el("h2", "", t("logs.crashes")));
+    cCard.append(el("p", "muted", t("logs.crashesNote")));
+    for (const e of entries.slice().reverse()) {
+      const row = el("div", "switch-row");
+      const when = new Date((e.time || 0) * 1000).toLocaleString();
+      const tail = Array.isArray(e.tail) && e.tail.length ? e.tail[e.tail.length - 1] : "";
+      row.append(
+        el("span", "", when),
+        el(
+          "span",
+          `badge ${e.code == null ? "fail" : "mid"}`,
+          e.code == null ? t("logs.crash") : `code ${e.code}`
+        ),
+        el("span", "mono doctor-detail", String(tail).slice(0, 140))
+      );
+      cCard.append(row);
+    }
+    wrap.append(cCard);
+  });
+
   const logBox = el("pre", "logbox", "");
   (logBox as any).id = "logbox";
   api.getLogs().then((lines) => {
-    logBox.textContent = lines.join("\n") || t("logs.empty");
+    const q = logQuery.trim().toLowerCase();
+    const filtered = lines.filter((l) => {
+      if (logLevel && logLevelOf(l) !== logLevel) return false;
+      if (q && !l.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    logBox.textContent = filtered.length
+      ? filtered.join("\n")
+      : lines.length
+        ? t("logs.noMatches")
+        : t("logs.empty");
     logBox.scrollTop = logBox.scrollHeight;
   });
   wrap.append(logBox);
@@ -1879,6 +2630,159 @@ function renderAbout() {
 }
 
 // ---------------------------------------------------------------------------
+// first-run wizard (#24)
+// ---------------------------------------------------------------------------
+
+/**
+ * Four-step tour shown once on a fresh install (settings.json had no
+ * wizard_done flag): language -> import -> geo data -> done. Skip or finish
+ * records wizard_done so it never shows again.
+ */
+function firstRunWizard() {
+  if (!settings || settings.wizard_done !== false) return;
+  if (document.querySelector(".modal-back")) return;
+
+  const dlg = el("div", "modal-back wizard");
+  const box = el("div", "modal wizard-modal");
+  dlg.append(box);
+  document.body.append(dlg);
+
+  let step = 0;
+  let geoBusy = false;
+  let geoDone = false;
+
+  const finish = async () => {
+    dlg.remove();
+    try {
+      await save({ wizard_done: true });
+    } catch {
+      // worst case: the wizard shows again on next launch
+    }
+  };
+
+  const stepImport = () => {
+    const w = el("div", "wizard-step");
+    w.append(el("h2", "", t("wizard.importTitle")), el("p", "muted", t("wizard.importNote")));
+    const ta = el("textarea") as HTMLTextAreaElement;
+    ta.placeholder = t("servers.dialogAdd");
+    w.append(ta);
+    const row = el("div", "actions");
+    const btnImport = el("button", "btn primary", t("servers.import"));
+    btnImport.onclick = async () => {
+      const data = ta.value.trim();
+      if (!data) return;
+      try {
+        const n = await api.importLinks(data, "");
+        servers = await api.listServers();
+        await refreshData();
+        w.append(el("p", "muted", t("wizard.imported").replace("{n}", String(n))));
+        btnImport.disabled = true;
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+      }
+    };
+    const btnBrowse = el("button", "btn", t("wizard.browse"));
+    btnBrowse.onclick = async () => {
+      await finish();
+      switchView("subs");
+    };
+    row.append(btnImport, btnBrowse);
+    w.append(row);
+    return w;
+  };
+
+  const stepGeo = () => {
+    const w = el("div", "wizard-step");
+    w.append(el("h2", "", t("wizard.geoTitle")), el("p", "muted", t("wizard.geoNote")));
+    const btn = el(
+      "button",
+      "btn primary",
+      geoBusy ? t("wizard.geoBusy") : geoDone ? t("wizard.geoDone") : t("routing.geoDownload")
+    );
+    btn.disabled = geoBusy || geoDone;
+    btn.onclick = async () => {
+      geoBusy = true;
+      btn.disabled = true;
+      btn.textContent = t("wizard.geoBusy");
+      try {
+        await api.downloadGeo();
+        geoDone = true;
+        btn.textContent = t("wizard.geoDone");
+      } catch (e: any) {
+        alert(`${t("error")}: ${e}`);
+        btn.textContent = t("routing.geoDownload");
+      } finally {
+        geoBusy = false;
+        btn.disabled = geoDone;
+      }
+    };
+    w.append(btn);
+    return w;
+  };
+
+  const steps: Array<() => HTMLElement> = [
+    () => {
+      const w = el("div", "wizard-step");
+      w.append(el("h2", "", t("wizard.welcome")), el("p", "muted", t("wizard.langNote")));
+      const row = el("div", "actions");
+      const mk = (code: Lang, label: string) => {
+        const b = el("button", `btn${getLang() === code ? " primary" : ""}`, label);
+        b.onclick = () => {
+          applyLang(code);
+          void save({ language: code });
+          draw();
+        };
+        row.append(b);
+      };
+      mk("en", "English");
+      mk("fa", "فارسی");
+      w.append(row);
+      return w;
+    },
+    stepImport,
+    stepGeo,
+    () => {
+      const w = el("div", "wizard-step");
+      w.append(el("h2", "", t("wizard.doneTitle")), el("p", "muted", t("wizard.doneNote")));
+      return w;
+    },
+  ];
+
+  const draw = () => {
+    box.textContent = "";
+    box.append(steps[step]());
+    const foot = el("div", "wizard-foot");
+    const dots = el("div", "wizard-dots");
+    steps.forEach((_, i) => dots.append(el("span", `dot${i === step ? " on" : ""}`)));
+    const actions = el("div", "modal-actions");
+    if (step > 0) {
+      const back = el("button", "btn ghost", t("wizard.back"));
+      back.onclick = () => {
+        step--;
+        draw();
+      };
+      actions.append(back);
+    }
+    const skip = el("button", "btn ghost", t("wizard.skip"));
+    skip.onclick = () => void finish();
+    actions.append(skip);
+    const last = step >= steps.length - 1;
+    const next = el("button", "btn primary", last ? t("wizard.finish") : t("wizard.next"));
+    next.onclick = () => {
+      if (last) void finish();
+      else {
+        step++;
+        draw();
+      }
+    };
+    actions.append(next);
+    foot.append(dots, actions);
+    box.append(foot);
+  };
+  draw();
+}
+
+// ---------------------------------------------------------------------------
 // connect / disconnect
 // ---------------------------------------------------------------------------
 
@@ -1891,6 +2795,8 @@ async function doConnect(mode: string) {
   }
   await refreshData();
   updateStatus();
+  // #21: verify the full chain right after a connect attempt
+  runDoctor(true);
 }
 
 async function doDisconnect() {
@@ -1930,6 +2836,25 @@ function listenTraffic() {
         box.scrollTop = box.scrollHeight;
       }
     });
+    // #6: toast when ports had to shift to avoid a conflict
+    listen("ports-shifted", (e: any) => {
+      const changes = (e.payload?.changes || []) as [string, number, number][];
+      if (changes.length) {
+        toast(
+          changes.map(([n, o, nw]) => `${n}: ${o} -> ${nw}`).join("   ")
+        );
+      }
+    });
+    // #23: the core died on its own - clear backend state and refresh UI
+    listen("core-exited", async () => {
+      try {
+        await api.disconnect();
+      } catch {
+        /* state may already be gone */
+      }
+      updateStatus();
+      if (currentView === "logs" || currentView === "connection") renderView();
+    });
   } catch { /* not on tauri bridge during dev */ }
 }
 
@@ -1961,6 +2886,8 @@ async function init() {
   listenTraffic();
   // release check after first paint so it never delays startup
   setTimeout(checkAppUpdateOnBoot, 1500);
+  // #24: first-run wizard after first paint
+  setTimeout(firstRunWizard, 600);
   setInterval(updateStatus, 4000);
   setInterval(async () => {
     await refreshData();
