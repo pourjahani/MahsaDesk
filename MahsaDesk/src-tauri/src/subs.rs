@@ -39,7 +39,7 @@ pub async fn fetch_payload(url: &str) -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client
+    let mut resp = client
         .get(url)
         .header("User-Agent", "MahsaDesk/0.1")
         .send()
@@ -48,5 +48,18 @@ pub async fn fetch_payload(url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    Ok(resp.text().await.map_err(|e| e.to_string())?)
+    // Cap the body: a hostile or broken endpoint must not be able to exhaust
+    // memory - the biggest real subscriptions are a few MB.
+    const MAX_BODY: usize = 32 * 1024 * 1024;
+    if resp.content_length().unwrap_or(0) as usize > MAX_BODY {
+        return Err("subscription too large (over 32 MB)".into());
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len() + chunk.len() > MAX_BODY {
+            return Err("subscription too large (over 32 MB)".into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }

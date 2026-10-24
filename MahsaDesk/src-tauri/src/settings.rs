@@ -67,7 +67,7 @@ impl Default for Settings {
             http_port: 10809,
             loglevel: "warning".into(),
             sniffing: true,
-            allow_insecure: true,
+            allow_insecure: false,
             mux: false,
             ipv6: false,
             remote_dns: "1.1.1.1".into(),
@@ -179,5 +179,13 @@ mod tests {
         fs::write(d.join("settings.json"), "{\"wizard_done\":false}").unwrap();
         assert_eq!(Settings::load(&d).wizard_done, Some(false));
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn fresh_defaults_keep_certificate_verification() {
+        // allow_insecure disables TLS certificate verification for every server
+        // connection: a fresh install must fail closed, not open. Stored settings
+        // files keep whatever the user already had.
+        assert!(!Settings::default().allow_insecure);
     }
 }

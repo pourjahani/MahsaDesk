@@ -85,7 +85,7 @@ pub fn apply(settings: &mut Settings, id: &str) -> bool {
     }
 }
 
-/// Best-effort ISP id from an ip-api response (`isp`/`org` fields), used by
+/// Best-effort ISP id from an IP-lookup response (`isp`/`org` fields), used by
 /// the UI to preselect a preset chip. Returns None when nothing matches.
 pub fn detect_from_ipinfo(isp: &str, org: &str) -> Option<&'static str> {
     let hay = format!("{} {}", isp, org).to_lowercase();

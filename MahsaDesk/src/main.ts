@@ -2383,7 +2383,8 @@ function renderSettings() {
     mkSwitch(t("settings.allowInsecure"), "allow_insecure"),
     mkSwitch(t("settings.mux"), "mux"),
     mkSwitch(t("settings.ipv6"), "ipv6"),
-    mkSwitch(t("settings.proxySharing"), "proxy_sharing")
+    mkSwitch(t("settings.proxySharing"), "proxy_sharing"),
+    el("p", "muted", t("settings.proxySharingWarn"))
   );
   wrap.append(conn);
 

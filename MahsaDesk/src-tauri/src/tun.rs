@@ -97,6 +97,13 @@ pub fn build_singbox_config_native(server: &ServerProfile, per_app_mode: &str, p
     })
 }
 
+/// Quote a value as a PowerShell single-quoted literal: inside '...' the only
+/// special character is the quote itself, doubled. This keeps paths with
+/// spaces, `$`, backticks or quotes from breaking out of the elevated command.
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
 /// Write the sing-box config and start it elevated (UAC prompt). Best-effort.
 pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &PathBuf) -> Result<(), String> {
     let cfg = config;
@@ -104,14 +111,19 @@ pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &Path
     let json_text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&cfg_path, json_text).map_err(|e| format!("config write: {}", e))?;
 
-    let exe = singbox_path
-        .to_string_lossy()
-        .replace('\\', "\\\\");
+    // Arguments travel as ONE string so paths with spaces stay intact;
+    // Windows paths cannot contain '"', so embedding them in double quotes
+    // inside the single-quoted -Command is safe, and ps_quote keeps any
+    // quote in a path from ending the literal early.
+    let args = format!(
+        "run -c \"{}\" -D \"{}\"",
+        cfg_path.to_string_lossy(),
+        workdir.to_string_lossy()
+    );
     let ps = format!(
-        "Start-Process -FilePath '{}' -ArgumentList 'run','-c','{}','-D','{}' -Verb RunAs -WindowStyle Hidden",
-        exe,
-        cfg_path.to_string_lossy().replace('\\', "\\\\"),
-        workdir.to_string_lossy().replace('\\', "\\\\")
+        "Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -WindowStyle Hidden",
+        ps_quote(&singbox_path.to_string_lossy()),
+        ps_quote(&args)
     );
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps]);
@@ -141,4 +153,21 @@ pub fn stop_tun_elevated() -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ps_quote;
+
+    #[test]
+    fn quotes_powershell_single_quoted_literals() {
+        assert_eq!(ps_quote("plain"), "'plain'");
+        // an embedded quote must double, never close the literal
+        assert_eq!(
+            ps_quote(r"C:\Users\O'Brien\app"),
+            "'C:\\Users\\O''Brien\\app'"
+        );
+        // `$` and backticks need no escaping inside single quotes
+        assert_eq!(ps_quote("$(evil)`whoami"), "'$(evil)`whoami'");
+    }
 }

@@ -627,7 +627,6 @@ fn socks_client(port: u16, timeout: std::time::Duration) -> Option<reqwest::bloc
     reqwest::blocking::Client::builder()
         .proxy(proxy)
         .timeout(timeout)
-        .danger_accept_invalid_certs(true)
         .user_agent("MahsaDesk/1.0")
         .build()
         .ok()
@@ -636,7 +635,6 @@ fn socks_client(port: u16, timeout: std::time::Duration) -> Option<reqwest::bloc
 fn plain_client(timeout: std::time::Duration) -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .danger_accept_invalid_certs(true)
         .user_agent("MahsaDesk/1.0")
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new())
@@ -694,7 +692,7 @@ fn doctor_work(snap: DoctorSnapshot) -> Vec<DoctorCheck> {
         Some(c) => {
             let start = Instant::now();
             let res = c
-                .get("http://www.gstatic.com/generate_204")
+                .get("https://www.gstatic.com/generate_204")
                 .send()
                 .map(|r| r.status().as_u16());
             match res {
@@ -1182,7 +1180,7 @@ fn isp_presets() -> Vec<isp::IspPreset> {
     isp::presets()
 }
 
-/// Best-effort ISP guess from ip-api fields, for preset preselection (#22).
+/// Best-effort ISP guess from the IP-lookup response fields, for preset preselection (#22).
 #[tauri::command]
 fn detect_isp(isp: String, org: String) -> Option<String> {
     isp::detect_from_ipinfo(&isp, &org).map(|s| s.to_string())

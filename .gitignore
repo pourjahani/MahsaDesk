@@ -1,5 +1,7 @@
 *.dat
 *.jks
+mahsa_accounts.txt
+mahsa_sub.json
 V2rayNG/app/release/output.json
 .idea/
 .gradle/

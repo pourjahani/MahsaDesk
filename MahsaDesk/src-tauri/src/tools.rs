@@ -184,7 +184,6 @@ async fn resolve_one_doh(server_ip: &str, domain: &str) -> (DnsResult, Option<St
     };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(4))
-        .danger_accept_invalid_certs(true)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     let url = format!("https://{}/dns-query?name={}&type=A", server_ip, domain);
@@ -526,28 +525,53 @@ pub fn net_port_check(host: &str, port: u16) -> PortCheckResult {
 }
 
 // ---------------------------------------------------------------------------
-// IP / speed tools (plain HTTP, through the direct connection)
+// IP / speed tools (direct connection)
 // ---------------------------------------------------------------------------
 
 fn http_client(timeout: Duration) -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .danger_accept_invalid_certs(true)
         .user_agent("MahsaDesk/1.0")
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new())
 }
 
 /// "What is my IP" + rough geolocation, the classic network-tools view.
+/// ipwho.is over HTTPS: the free ip-api endpoint is HTTP-only, so its answer
+/// would be visible to (and forgeable by) anyone on the path. Fields are
+/// mapped to the keys the UI reads (query/country/city/isp/org/as).
 pub fn my_ip_info() -> Result<serde_json::Value, String> {
     let client = http_client(Duration::from_secs(6));
-    let ip_raw = client
-        .get("http://ip-api.com/json/?fields=status,message,country,countryCode,regionName,city,isp,org,as,timezone,query")
+    let v: serde_json::Value = client
+        .get("https://ipwho.is/")
         .send()
         .map_err(|e| e.to_string())?
-        .json::<serde_json::Value>()
+        .json()
         .map_err(|e| e.to_string())?;
-    Ok(ip_raw)
+    if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+        return Err(v
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("IP lookup failed")
+            .to_string());
+    }
+    let conn = v.get("connection").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let pick = |o: &serde_json::Value, k: &str| -> String {
+        o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    };
+    Ok(serde_json::json!({
+        "status": "success",
+        "query": pick(&v, "ip"),
+        "country": pick(&v, "country"),
+        "city": pick(&v, "city"),
+        "isp": pick(&conn, "isp"),
+        "org": pick(&conn, "org"),
+        "as": format!(
+            "AS{} {}",
+            conn.get("asn").and_then(|a| a.as_u64()).unwrap_or(0),
+            pick(&conn, "org")
+        ),
+    }))
 }
 
 /// Download-based speed test: pulls `bytes` from Cloudflare's speed endpoint

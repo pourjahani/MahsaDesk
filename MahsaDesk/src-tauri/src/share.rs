@@ -1,6 +1,6 @@
 //! Share the current server pool as a subscription URL (#16).
 //!
-//! A tiny loopback (or LAN) HTTP endpoint that answers `GET /` with the base64
+//! A tiny loopback (or LAN) HTTP endpoint that answers `GET /<token>` with the base64
 //! of every share link the app holds, so a phone on the same network can point
 //! any subscription client at it — or scan the QR the UI shows. Uses only the
 //! standard library: no web framework, one accept thread, one thread per
@@ -76,7 +76,7 @@ fn respond(mut stream: TcpStream, body: &str, status: &str) {
     let _ = stream.flush();
 }
 
-fn handle(mut stream: TcpStream, payload: &dyn Fn() -> String) {
+fn handle(mut stream: TcpStream, token: &str, payload: &dyn Fn() -> String) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut buf = [0u8; 2048];
     let n = match stream.read(&mut buf) {
@@ -85,21 +85,26 @@ fn handle(mut stream: TcpStream, payload: &dyn Fn() -> String) {
     };
     let text = String::from_utf8_lossy(&buf[..n]);
     let first = text.lines().next().unwrap_or("");
-    // only serve GET/HEAD of the document; anything else gets a hint
+    // only GET/HEAD of the unguessable capability path is served; everything
+    // else 404s without hints, so the endpoint cannot be discovered by probing
     if first.starts_with("GET ") || first.starts_with("HEAD ") {
         let path = first.split_whitespace().nth(1).unwrap_or("/");
-        if path == "/" || path.starts_with("/sub") {
+        if path_allowed(path, token) {
             respond(stream, &payload(), "200 OK");
         } else {
-            respond(
-                stream,
-                "MahsaDesk share endpoint. Point your subscription client at /\n",
-                "404 Not Found",
-            );
+            respond(stream, "not found\n", "404 Not Found");
         }
     } else {
         respond(stream, "method not allowed\n", "405 Method Not Allowed");
     }
+}
+
+/// Only `/<token>` (optionally followed by `/...` or `?...`) is served.
+fn path_allowed(path: &str, token: &str) -> bool {
+    let prefix = format!("/{}", token);
+    path == prefix
+        || path.starts_with(&format!("{}/", prefix))
+        || path.starts_with(&format!("{}?", prefix))
 }
 
 use std::io::{Read, Write};
@@ -124,9 +129,17 @@ pub fn start(
         .set_nonblocking(true)
         .map_err(|e| e.to_string())?;
 
-    let local_url = format!("http://127.0.0.1:{}", port);
+    // 128-bit capability path: without it anyone who can reach the port could
+    // pull the entire config pool with a single request to the server root
+    let token = {
+        use rand::RngCore;
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    };
+    let local_url = format!("http://127.0.0.1:{}/{}", port, token);
     let lan_url = if lan {
-        lan_ip().map(|ip| format!("http://{}:{}", ip, port))
+        lan_ip().map(|ip| format!("http://{}:{}/{}", ip, port, token))
     } else {
         None
     };
@@ -155,7 +168,8 @@ pub fn start(
             match listener.accept() {
                 Ok((stream, _)) => {
                     let payload = payload.clone();
-                    std::thread::spawn(move || handle(stream, &*payload));
+                    let token = token.clone();
+                    std::thread::spawn(move || handle(stream, &token, &*payload));
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(120));
@@ -175,4 +189,21 @@ pub fn start(
         stop,
         join: Some(join),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_allowed;
+
+    #[test]
+    fn only_the_capability_path_is_served() {
+        let token = "aabbccdd11223344aabbccdd11223344";
+        assert!(path_allowed(&format!("/{}", token), token));
+        assert!(path_allowed(&format!("{}/more", format!("/{}", token)), token));
+        assert!(path_allowed(&format!("/{}?x=1", token), token));
+        assert!(!path_allowed("/", token));
+        assert!(!path_allowed("/sub", token));
+        assert!(!path_allowed("/index.html", token));
+        assert!(!path_allowed("/notthetoken", token));
+    }
 }

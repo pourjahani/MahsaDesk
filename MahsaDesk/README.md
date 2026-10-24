@@ -42,6 +42,12 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.6
+
+- **Security and privacy audit** - a full audit of the app with every finding fixed: strict Content-Security-Policy, scoped opener permission, TLS certificate verification enabled everywhere ("Allow insecure TLS" now defaults off for new installs), the elevated TUN launch made injection-safe, a 32 MB cap on subscription downloads, and CI actions pinned to commit SHAs
+- **Token-protected sharing** - the share-as-subscription URL now carries an unguessable 128-bit path, so only people you hand the link or QR to can pull your configs (re-share to get a new link)
+- **Honest privacy section** - both READMEs now list every third party the app can contact, and "Share proxy on LAN" warns that the proxy is password-less while it is on
+
 ### New in v0.3.5
 
 - **Per-app gate in system-proxy mode** - bypass/allow rules now work without TUN: the app owns the port the system proxy points at, identifies each client process by PID and forwards or dials per your rules - no admin rights, no kernel driver
@@ -96,7 +102,16 @@ CI builds and publishes releases automatically on `v*` tags.
 
 ## 🔒 Privacy
 
-The app talks only to your proxy servers and your subscription URLs. No analytics, no telemetry. Configuration lives in `%APPDATA%\com.mahsadesk.desktop`.
+No analytics, no telemetry: nothing is ever sent to us. To do its job the app does contact a few third parties, and only these:
+
+- Your proxy servers and your subscription URLs (always).
+- GitHub (`api.github.com`, `github.com`) for the update check and for engine/geo downloads.
+- When you connect: `www.gstatic.com` (connectivity check) and `api.ipify.org` (IP-leak check - once directly, once through the tunnel).
+- On the Routing view and in the "What is my IP" tool: `ipwho.is` (IP/ISP lookup from your direct connection).
+- When a Psiphon mode is active: the Psiphon network (that is the tunnel itself).
+- When you run the speed test or the DNS scan: `speed.cloudflare.com` and the DNS servers listed in the scanner.
+
+Configuration lives in `%APPDATA%\com.mahsadesk.desktop`.
 
 ## 📦 Reference Projects
 
