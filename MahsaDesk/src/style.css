@@ -74,36 +74,7 @@ html[dir="rtl"] body {
   flex-direction: column;
   padding: 20px 14px;
   gap: 12px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 8px 16px;
-}
-
-.logo {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  background: var(--text);
-  color: var(--surface);
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 18px;
-}
-
-.brand-name {
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-}
-
-.brand-sub {
-  font-size: 11px;
-  color: var(--muted);
+  overflow-y: auto;
 }
 
 .nav {
@@ -111,6 +82,8 @@ html[dir="rtl"] body {
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -705,8 +678,25 @@ textarea.lines {
 /* conn buttons row */
 .conn-btns {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 6px;
+}
+
+/* compact one-line connect row: full mode names live in the title tooltip */
+.conn-btns .btn {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  font-size: 12px;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#btn-stop {
+  width: 100%;
+  justify-content: center;
 }
 
 .ph svg {

@@ -24,6 +24,9 @@ export const DICT = {
       systemMode: "System proxy",
       tunMode: "TUN (experimental)",
       psiphonOnly: "Psiphon only",
+      connSystem: "Proxy",
+      connTun: "TUN",
+      connPsiphon: "Psiphon",
       psiphonAfter: "Psiphon after",
     },
     servers: {
@@ -429,6 +432,9 @@ export const DICT = {
       systemMode: "پروکسی سیستم",
       tunMode: "TUN (آزمایشی)",
       psiphonOnly: "تنها سایفون",
+      connSystem: "پروکسی",
+      connTun: "TUN",
+      connPsiphon: "سایفون",
       psiphonAfter: "سایفون بعد از کانفیگ",
     },
     servers: {

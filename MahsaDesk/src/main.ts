@@ -125,13 +125,6 @@ function buildLayout() {
   const shell = el("div", "shell");
   const sidebar = el("aside", "sidebar");
 
-  const brand = el("div", "brand");
-  const logo = el("div", "logo", "M");
-  const brandText = el("div", "brand-text");
-  brandText.append(el("div", "brand-name", t("appName")), el("div", "brand-sub", t("subtitle")));
-  brand.append(logo, brandText);
-  sidebar.append(brand);
-
   navEl = el("nav", "nav");
   for (const n of NAV) {
     const item = el("button", "nav-item");
@@ -149,19 +142,22 @@ function buildLayout() {
   statusText = el("span", "status-label", t("status.disconnected"));
   row.append(statusDot, statusText);
   const btnRow = el("div", "conn-btns");
-  const btnSystem = el("button", "btn primary", t("settings.systemMode"));
+  const btnSystem = el("button", "btn primary", t("status.connSystem"));
+  btnSystem.title = t("settings.systemMode");
   btnSystem.onclick = () => doConnect("system");
-  const btnTun = el("button", "btn", t("status.tunMode"));
+  const btnTun = el("button", "btn", t("status.connTun"));
+  btnTun.title = t("status.tunMode");
   btnTun.onclick = () => doConnect("tun");
-  const btnPsiphon = el("button", "btn", t("status.psiphonOnly"));
+  const btnPsiphon = el("button", "btn", t("status.connPsiphon"));
+  btnPsiphon.title = t("status.psiphonOnly");
   btnPsiphon.onclick = () => doConnect("psiphon-only");
+  btnRow.append(btnSystem, btnTun, btnPsiphon);
   const btnStop = el("button", "btn ghost", "Stop");
   btnStop.id = "btn-stop";
   btnStop.style.display = "none";
   btnStop.onclick = () => doDisconnect();
-  btnRow.append(btnSystem, btnTun, btnPsiphon, btnStop);
   trafficEl = el("div", "traffic", "");
-  connectCard.append(row, trafficEl, btnRow);
+  connectCard.append(row, trafficEl, btnRow, btnStop);
   sidebar.append(connectCard);
 
   mainEl = el("main", "main");
