@@ -2037,6 +2037,11 @@ function renderTools() {
     ["cloudflare", "Cloudflare"],
     ["google", "Google"],
     ["digitalocean", "DigitalOcean"],
+    ["akamai", "Akamai"],
+    ["fastly", "Fastly"],
+    ["bunny", "Bunny"],
+    ["warp", "Cloudflare WARP"],
+    ["masque", "Cloudflare MASQUE"],
     ["custom", "Custom"],
   ] as [string, string][]) {
     const o = el("option", "", v) as HTMLOptionElement;
@@ -2057,10 +2062,14 @@ function renderTools() {
   const customTa = el("textarea", "lines") as HTMLTextAreaElement;
   customTa.placeholder = "104.16.0.0/16\n172.64.0.0/16";
   customTa.style.display = "none";
+  const udpNote = el("p", "muted", t("tools.ipUdpNote"));
+  udpNote.style.display = "none";
   presetSel.onchange = () => {
     customTa.style.display = presetSel.value === "custom" ? "" : "none";
+    const udp = presetSel.value === "warp" || presetSel.value === "masque";
+    udpNote.style.display = udp ? "" : "none";
   };
-  ipCard.append(customTa);
+  ipCard.append(customTa, udpNote);
   const ipOut = el("div", "lines") as HTMLElement;
   ipCard.append(ipOut);
   ipBtn.onclick = async () => {

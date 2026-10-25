@@ -328,6 +328,13 @@ pub struct IpResult {
 }
 
 /// Candidate IP presets for the scanner.
+///
+/// Sources: providers' published ranges where they exist (Cloudflare,
+/// Google, DigitalOcean, Fastly's public-ip-list), IPLocate's
+/// provider-attributed Akamai blocks, the prefixes Bunny's AS200325
+/// originates in BGP, and Cloudflare's documented WARP/MASQUE ingress
+/// blocks. Note the scan samples up to the 512-address cap, so presets
+/// with many blocks are covered, not exhaustively probed.
 pub const IP_PRESETS: &[(&str, &[&str])] = &[
     (
         "cloudflare",
@@ -340,6 +347,44 @@ pub const IP_PRESETS: &[(&str, &[&str])] = &[
     (
         "digitalocean",
         &["159.65.0.0/16", "139.59.0.0/16"],
+    ),
+    (
+        "akamai",
+        &[
+            "23.32.0.0/11", "23.72.0.0/13", "104.64.0.0/10", "184.24.0.0/13",
+            "184.84.0.0/14", "96.16.0.0/15", "95.100.144.0/20",
+        ],
+    ),
+    (
+        "fastly",
+        // api.fastly.com/public-ip-list: the eight largest blocks; 8 x 64
+        // fills the 512-address scan cap exactly
+        &[
+            "23.235.32.0/20", "140.248.64.0/18", "146.75.0.0/17", "151.101.0.0/16",
+            "157.52.64.0/18", "167.82.0.0/17", "172.111.64.0/18", "199.232.0.0/16",
+        ],
+    ),
+    (
+        "bunny",
+        // prefixes originated by Bunny's AS200325 (bgp.tools), adjacent /24s
+        // summarised into /23s; sampled up to the scan cap
+        &[
+            "38.92.173.0/24", "91.200.176.0/24", "103.180.114.0/23", "107.150.176.0/24",
+            "109.104.146.0/23", "109.224.228.0/22", "157.53.226.0/24", "185.190.83.0/24",
+            "193.162.131.0/24", "194.156.156.0/24", "212.104.158.0/24",
+        ],
+    ),
+    (
+        "warp",
+        // Cloudflare WARP / Zero Trust WireGuard ingress. Tunnels are UDP
+        // (2408, 500, 1701, 4500); TCP 443 is only the HTTP/2 fallback.
+        &["162.159.192.0/24", "162.159.193.0/24"],
+    ),
+    (
+        "masque",
+        // Cloudflare Zero Trust MASQUE ingress; tunnel is UDP 443 by default,
+        // TCP 443 answers as the documented HTTP/2 fallback.
+        &["162.159.197.0/24"],
     ),
 ];
 

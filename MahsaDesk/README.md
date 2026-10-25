@@ -110,6 +110,7 @@ No analytics, no telemetry: nothing is ever sent to us. To do its job the app do
 - On the Routing view and in the "What is my IP" tool: `ipwho.is` (IP/ISP lookup from your direct connection).
 - When a Psiphon mode is active: the Psiphon network (that is the tunnel itself).
 - When you run the speed test or the DNS scan: `speed.cloudflare.com` and the DNS servers listed in the scanner.
+- When you run the IP scanner: TCP probes to the candidate IPs of the chosen preset (Cloudflare, Google, DigitalOcean, Akamai, Fastly, Bunny, Cloudflare WARP/MASQUE) or to your custom list.
 
 Configuration lives in `%APPDATA%\com.mahsadesk.desktop`.
 

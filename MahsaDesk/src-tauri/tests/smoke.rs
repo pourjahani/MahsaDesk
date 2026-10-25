@@ -330,6 +330,15 @@ fn parse_dns_answer_reads_a_records() {
 
 #[test]
 fn ip_presets_expand_to_valid_ips() {
+    // every shipped preset must expand to at least one valid address
+    for (id, _) in tools::IP_PRESETS {
+        let ips = tools::expand_candidate_ips(id, "", 8);
+        assert!(!ips.is_empty(), "preset {} expanded to nothing", id);
+        for ip in &ips {
+            ip.parse::<std::net::Ipv4Addr>()
+                .unwrap_or_else(|e| panic!("preset {}: bad ip {} : {}", id, ip, e));
+        }
+    }
     let ips = tools::expand_candidate_ips("cloudflare", "", 8);
     assert!(!ips.is_empty());
     assert!(ips.len() <= 64);
