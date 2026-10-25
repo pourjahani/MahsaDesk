@@ -28,6 +28,8 @@ pub struct ShareInfo {
     pub lan_url: Option<String>,
     pub port: u16,
     pub lan: bool,
+    /// Server ids this endpoint serves; None = the whole pool (#14 bulk share).
+    pub scope: Option<Vec<String>>,
 }
 
 pub struct ShareHandle {
@@ -114,6 +116,7 @@ use std::io::{Read, Write};
 pub fn start(
     port: u16,
     lan: bool,
+    scope: Option<Vec<String>>,
     payload: Arc<dyn Fn() -> String + Send + Sync>,
     logs: &Arc<Mutex<VecDeque<String>>>,
     area: &AppHandle,
@@ -150,6 +153,7 @@ pub fn start(
         lan_url,
         port,
         lan,
+        scope,
     };
 
     let stop = Arc::new(AtomicBool::new(false));

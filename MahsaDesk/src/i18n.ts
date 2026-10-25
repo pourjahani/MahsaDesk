@@ -94,7 +94,9 @@ export const DICT = {
       clearSelection: "Clear selection",
       selectedCount: "{n} selected",
       testSelected: "Ping selected",
+      realSelected: "Real test selected",
       exportSelected: "Copy links",
+      shareSelected: "Share selected",
       deleteSelected: "Delete selected",
       deleteConfirm: "Delete {n} selected server(s)?",
       share: "Share",
@@ -109,6 +111,7 @@ export const DICT = {
       start: "Start sharing",
       startNote:
         "Anyone on your local network with this link can see your configs - stop sharing when you are done.",
+      scopeNote: "Serving only the {n} selected server(s) - the rest of your pool is not exposed.",
       stop: "Stop",
     },
     subs: {
@@ -495,7 +498,9 @@ export const DICT = {
       clearSelection: "پاک‌کردن انتخاب",
       selectedCount: "{n} مورد انتخاب شد",
       testSelected: "پینگ انتخاب‌شده‌ها",
+      realSelected: "آزمون واقعی انتخاب‌شده‌ها",
       exportSelected: "کپی لینک‌ها",
+      shareSelected: "هم‌رسانی انتخاب‌شده‌ها",
       deleteSelected: "حذف انتخاب‌شده‌ها",
       deleteConfirm: "{n} سرور انتخاب‌شده حذف شود؟",
       share: "اشتراک‌گذاری",
@@ -510,6 +515,7 @@ export const DICT = {
       start: "شروع اشتراک",
       startNote:
         "هرکسی در شبکه محلی که این لینک را داشته باشد می‌تواند کانفیگ‌هایت را ببیند - بعد که تمام شد متوقفش کن.",
+      scopeNote: "فقط همان {n} سرور انتخاب‌شده سرو می‌شود - بقیهٔ استخر در دسترس نیست.",
       stop: "توقف",
     },
     subs: {

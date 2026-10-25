@@ -578,6 +578,7 @@ fn share_server_start(
     st: State<ManagedState>,
     port: u16,
     lan: bool,
+    ids: Option<Vec<String>>,
 ) -> Result<share::ShareInfo, String> {
     let arc = state(&st);
     if let Some(prev) = arc.lock().unwrap().share.take() {
@@ -585,12 +586,21 @@ fn share_server_start(
     }
     let logs = { arc.lock().unwrap().logs.clone() };
     let st2 = arc.clone();
+    // None/empty = serve the whole pool; otherwise only the selected ids
+    // (#14 bulk share), so a selection can be shared without exposing the rest
+    let scope = ids.filter(|v| !v.is_empty());
+    let scoped = scope.clone();
     let payload: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || {
         let g = st2.lock().unwrap();
-        let joined: Vec<String> = g.servers.iter().map(|p| servers::build_link(p)).collect();
+        let joined: Vec<String> = g
+            .servers
+            .iter()
+            .filter(|p| scoped.as_ref().map_or(true, |ids| ids.contains(&p.id)))
+            .map(|p| servers::build_link(p))
+            .collect();
         STANDARD.encode(joined.join("\n"))
     });
-    let handle = share::start(port, lan, payload, &logs, &app)?;
+    let handle = share::start(port, lan, scope, payload, &logs, &app)?;
     let info = handle.info().clone();
     arc.lock().unwrap().share = Some(handle);
     Ok(info)
@@ -1038,12 +1048,13 @@ fn test_delay(st: State<ManagedState>, id: String) -> Option<u32> {
 }
 
 #[tauri::command]
-fn test_all_delays(st: State<ManagedState>) -> Vec<DelayResult> {
+fn test_all_delays(st: State<ManagedState>, ids: Option<Vec<String>>) -> Vec<DelayResult> {
     let targets: Vec<(String, String, u16)> = {
         let arc = state(&st);
         let g = arc.lock().unwrap();
         g.servers
             .iter()
+            .filter(|p| ids.as_ref().map_or(true, |sel| sel.contains(&p.id)))
             .map(|p| (p.id.clone(), p.address.clone(), p.port))
             .collect()
     };
@@ -1352,7 +1363,11 @@ fn run_real_test(app: AppHandle, st: State<ManagedState>, id: String) -> Result<
 }
 
 #[tauri::command]
-fn test_all_real(app: AppHandle, st: State<ManagedState>) -> Vec<DelayResult> {
+fn test_all_real(
+    app: AppHandle,
+    st: State<ManagedState>,
+    ids: Option<Vec<String>>,
+) -> Vec<DelayResult> {
     let xray = match locate_xray(&app) {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -1365,6 +1380,7 @@ fn test_all_real(app: AppHandle, st: State<ManagedState>) -> Vec<DelayResult> {
             g.servers
                 .iter()
                 .filter(|p| p.protocol != "hysteria2")
+                .filter(|p| ids.as_ref().map_or(true, |sel| sel.contains(&p.id)))
                 .map(|p| (p.id.clone(), p.clone()))
                 .collect::<Vec<_>>(),
         )

@@ -91,6 +91,8 @@ export interface ShareInfo {
   lan_url: string | null;
   port: number;
   lan: boolean;
+  /** Server ids this endpoint serves; null = the whole pool. */
+  scope: string[] | null;
 }
 
 export const api = {
@@ -101,8 +103,8 @@ export const api = {
   deleteServer: (id: string) => invoke<void>("delete_server", { id }),
   deleteServers: (ids: string[]) => invoke<void>("delete_servers", { ids }),
   exportLinks: (ids: string[]) => invoke<string[]>("export_links", { ids }),
-  shareStart: (port: number, lan: boolean) =>
-    invoke<ShareInfo>("share_server_start", { port, lan }),
+  shareStart: (port: number, lan: boolean, ids?: string[] | null) =>
+    invoke<ShareInfo>("share_server_start", { port, lan, ids: ids ?? null }),
   shareStop: () => invoke<void>("share_server_stop"),
   shareStatus: () => invoke<ShareInfo | null>("share_server_status"),
   connectionDoctor: () => invoke<DoctorCheck[]>("connection_doctor"),
@@ -124,7 +126,8 @@ export const api = {
   deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
   updateSubscription: (id: string) => invoke<number>("update_subscription", { id }),
   testDelay: (id: string) => invoke<number | null>("test_delay", { id }),
-  testAllDelays: () => invoke<{ id: string; delay: number | null }[]>("test_all_delays"),
+  testAllDelays: (ids?: string[] | null) =>
+    invoke<{ id: string; delay: number | null }[]>("test_all_delays", { ids: ids ?? null }),
   connect: (mode: string) => invoke<void>("connect", { mode }),
   disconnect: () => invoke<void>("disconnect_cmd"),
   status: () =>
@@ -139,7 +142,8 @@ export const api = {
   base64Encode: (t: string) => invoke<string>("base64_encode", { text: t }),
   shareLink: (id: string) => invoke<string>("share_link", { id }),
   runRealTest: (id: string) => invoke<number | null>("run_real_test", { id }),
-  testAllReal: () => invoke<{ id: string; delay: number | null }[]>("test_all_real"),
+  testAllReal: (ids?: string[] | null) =>
+    invoke<{ id: string; delay: number | null }[]>("test_all_real", { ids: ids ?? null }),
   validateConfig: () => invoke<void>("validate_servers_config"),
   listProcesses: () => invoke<string[]>("list_running_processes"),
   assetsInfo: () =>

@@ -463,12 +463,26 @@ function bulkBar(): HTMLElement {
   btnTest.disabled = ids.length === 0;
   btnTest.onclick = async () => {
     btnTest.disabled = true;
-    for (const id of ids) {
-      await api.testDelay(id);
+    // one batched backend call: parallel pings instead of a round-trip each
+    await api.testAllDelays(ids);
+    servers = await api.listServers();
+    renderView();
+  };
+  const btnReal = el("button", "btn", t("servers.realSelected"));
+  btnReal.disabled = ids.length === 0;
+  btnReal.onclick = async () => {
+    btnReal.disabled = true;
+    try {
+      await api.testAllReal(ids);
+    } catch (e: any) {
+      alert(`${t("error")}: ${e}`);
     }
     servers = await api.listServers();
     renderView();
   };
+  const btnShare = el("button", "btn", t("servers.shareSelected"));
+  btnShare.disabled = ids.length === 0;
+  btnShare.onclick = () => shareDialog(ids);
   const btnExport = el("button", "btn", t("servers.exportSelected"));
   btnExport.disabled = ids.length === 0;
   btnExport.onclick = async () => {
@@ -494,16 +508,16 @@ function bulkBar(): HTMLElement {
     servers = await api.listServers();
     renderView();
   };
-  bar.append(btnAll, btnNone, btnTest, btnExport, btnDel);
+  bar.append(btnAll, btnNone, btnTest, btnReal, btnExport, btnShare, btnDel);
   return bar;
 }
 
 /** Share the pool as a subscription URL (#16): start form or live endpoint. */
-async function shareDialog() {
+async function shareDialog(ids?: string[]) {
   const info = await api.shareStatus().catch(() => null);
   const dlg = el("div", "modal-back");
   const box = el("div", "modal");
-  box.append(el("h2", "", t("servers.share")));
+  box.append(el("h2", "", ids ? t("servers.shareSelected") : t("servers.share")));
 
   if (info) {
     box.append(el("p", "mono share-url", info.url));
@@ -518,6 +532,11 @@ async function shareDialog() {
       // QR rendering is optional; the URL below is always copyable
     }
     box.append(el("p", "muted", t("share.note")));
+    if (info.scope) {
+      box.append(
+        el("p", "muted", t("share.scopeNote").replace("{n}", String(info.scope.length)))
+      );
+    }
     const row = el("div", "modal-actions");
     const copy = el("button", "btn primary", t("servers.copy"));
     copy.onclick = async () => {
@@ -560,9 +579,9 @@ async function shareDialog() {
       try {
         const p = Math.max(1, Math.min(65535, Number(port.value || 18081)));
         await save({ share_port: p, share_lan: lan });
-        await api.shareStart(p, lan);
+        await api.shareStart(p, lan, ids);
         dlg.remove();
-        shareDialog();
+        shareDialog(ids);
       } catch (e: any) {
         alert(`${t("error")}: ${e}`);
       }
