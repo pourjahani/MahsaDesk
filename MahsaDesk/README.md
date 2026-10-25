@@ -42,6 +42,13 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.7
+
+- **Psiphon fixed** - the engine rejected the generated config (a non-integer ClientVersion) and exited instantly, so both Psiphon modes failed to start; it now starts reliably again
+- **Bulk actions for server selections** - the selection toolbar gained "Real test selected" and "Share selected" (the share endpoint now serves only the selected servers and says so), and bulk ping runs as one parallel batch instead of one round-trip per server
+- **Five new IP-scanner presets** - Akamai, Fastly, Bunny, Cloudflare WARP and Cloudflare MASQUE with verified ranges; WARP/MASQUE selections note that the tunnel ports are UDP, so probe port 443
+- **Compact sidebar** - the nav list scrolls while the connect card stays pinned, keeping Proxy / TUN / Psiphon in one always-reachable row; the brand header is gone
+
 ### New in v0.3.6
 
 - **Security and privacy audit** - a full audit of the app with every finding fixed: strict Content-Security-Policy, scoped opener permission, TLS certificate verification enabled everywhere ("Allow insecure TLS" now defaults off for new installs), the elevated TUN launch made injection-safe, a 32 MB cap on subscription downloads, and CI actions pinned to commit SHAs
