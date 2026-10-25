@@ -259,6 +259,15 @@ fn psiphon_config_builder_defaults_and_keys() {
     assert!(cfg.get("EmitDiagnosticNotices").unwrap().as_bool().unwrap());
     assert!(cfg.get("UpstreamProxyURL").is_none(), "only mode: no upstream");
 
+    // tunnel-core runs strconv.Atoi on ClientVersion at config load; a
+    // semver ("1.0") made it exit code 1 instantly (#live-bug regression).
+    let cv = cfg.get("ClientVersion").unwrap().as_str().unwrap();
+    assert!(
+        !cv.is_empty() && cv.chars().all(|c| c.is_ascii_digit()),
+        "ClientVersion must be an integer string, got {:?}",
+        cv
+    );
+
     // psiphon-after: upstream to xray's socks
     s.psiphon_protocol = "normal".into();
     s.psiphon_region = "de".into();

@@ -11,6 +11,14 @@ use crate::settings::Settings;
 /// Name of the tunnel-core executable we expect in the binaries folder.
 pub const EXE_NAME: &str = "psiphon-tunnel-core.exe";
 
+/// Integer-only client version: tunnel-core runs `strconv.Atoi` on
+/// `ClientVersion` while committing the config, so a semver like "1.0" makes
+/// it reject the file and exit code 1 before the tunnel ever starts.
+/// Dots stripped from the crate version ("0.3.6" -> "036").
+pub fn client_version() -> String {
+    env!("CARGO_PKG_VERSION").replace('.', "")
+}
+
 /// Default local ports (MahsaNG Android defaults).
 pub const DEFAULT_SOCKS_PORT: u16 = 7501;
 pub const DEFAULT_HTTP_PORT: u16 = 7502;
@@ -83,7 +91,7 @@ pub fn build_config(
         map.entry("SponsorId")
             .or_insert_with(|| json!("FFFFFFFFFFFFFFFF"));
         map.insert("ClientPlatform".into(), json!("Windows"));
-        map.insert("ClientVersion".into(), json!("1.0"));
+        map.insert("ClientVersion".into(), json!(client_version()));
         map.insert("EmitDiagnosticNotices".into(), json!(true));
         map.insert("EmitDiagnosticNetworkParameters".into(), json!(true));
         map.insert("EmitBytesTransferred".into(), json!(true));
