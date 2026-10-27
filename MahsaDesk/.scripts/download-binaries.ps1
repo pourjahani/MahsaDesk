@@ -65,12 +65,18 @@ $singDir = Expand-ZipTo $singUrl ""
 $sexe = Get-ChildItem $singDir -Recurse -Filter "sing-box.exe" | Select-Object -First 1
 Copy-Item $sexe.FullName -Destination (Join-Path $OutDir "sing-box.exe") -Force
 Write-Sha256Marker (Join-Path $OutDir "sing-box.exe")
-# wintun.dll rides along in the sing-box archive
-$wt = Get-ChildItem $singDir -Recurse -Filter "wintun.dll" | Where-Object { $_.Length -gt 100000 } | Select-Object -First 1
+# 2b. wintun.dll - the sing-box archive no longer ships it (sing-box embeds its
+#     own copy), but the app's requirements card still lists it as a runtime
+#     requirement, so fetch the file sing-tun keeps in-tree, pinned to a commit.
+$wt = Get-ChildItem $singDir -Recurse -Filter "wintun.dll" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 100000 } | Select-Object -First 1
 if ($wt) {
   Copy-Item $wt.FullName -Destination (Join-Path $OutDir "wintun.dll") -Force
-  Write-Sha256Marker (Join-Path $OutDir "wintun.dll")
+} else {
+  $wuUrl = "https://raw.githubusercontent.com/SagerNet/sing-tun/611d83b7a57b4719be45581eb674942ff561de6c/internal/wintun/amd64/wintun.dll"
+  Write-Host "Downloading $wuUrl"
+  Invoke-WebRequest -UserAgent "MahsaDesk" -Uri $wuUrl -OutFile (Join-Path $OutDir "wintun.dll")
 }
+Write-Sha256Marker (Join-Path $OutDir "wintun.dll")
 
 # 3. Psiphon tunnel engine - official Psiphon-Labs release-candidate binary
 #    (rolling branch, i686 build runs natively on x64 Windows via WoW64)
@@ -83,6 +89,18 @@ if (-not (Test-Path $psiDest) -or (Get-Item $psiDest).Length -lt 1MB) {
   Write-Host "psiphon-tunnel-core.exe already present, skipping"
 }
 Write-GitBlobMarker $psiDest (Join-Path $OutDir "psiphon-tunnel-core.sha")
+
+# Fail the build instead of shipping a bundle the app will report as
+# incomplete: a silently skipped file here reached every release as
+# "wintun.dll - missing" plus a failing in-app upgrade.
+$required = @("xray.exe", "geoip.dat", "geosite.dat", "sing-box.exe", "wintun.dll", "psiphon-tunnel-core.exe")
+$missing = $required | Where-Object {
+  $p = Join-Path $OutDir $_
+  (-not (Test-Path $p)) -or ((Get-Item $p).Length -lt 1024)
+}
+if ($missing) {
+  throw "missing required binaries in ${OutDir}: $($missing -join ', ')"
+}
 
 Write-Host "`nBinaries in $OutDir :"
 Get-ChildItem $OutDir | Format-Table Name, Length

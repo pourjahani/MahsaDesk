@@ -1479,13 +1479,17 @@ async function renderRequirementsCard(wrap: HTMLElement) {
         alert(t("requirements.updated"));
       } else if (await confirmEngineUpdate()) {
         allBtn.textContent = t("requirements.updating");
+        // one failing engine must not abort the rest of the batch
+        const failed: string[] = [];
         for (const it of todo) {
           try {
             await api.requirementsUpgrade(it.key);
           } catch (e: any) {
-            alert(`${t("error")}: ${e}`);
-            break;
+            failed.push(`${it.key}: ${e}`);
           }
+        }
+        if (failed.length > 0) {
+          alert(`${t("error")}:\n${failed.join("\n")}`);
         }
       }
     } catch (e: any) {

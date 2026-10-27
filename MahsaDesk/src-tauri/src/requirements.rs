@@ -19,6 +19,13 @@ const PSIPHON_BASE_URL: &str =
     "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/windows/psiphon-tunnel-core-i686.exe";
 const PSIPHON_SHA_URL: &str =
     "https://api.github.com/repos/Psiphon-Labs/psiphon-tunnel-core-binaries/contents/windows/psiphon-tunnel-core-i686.exe";
+/// wintun.dll: the sing-box release archive stopped shipping it (sing-box now
+/// embeds its own copy via `memmod`), so the card's old source always failed
+/// with "member matching pattern not found in <temp zip>". Pull the exact file
+/// sing-tun keeps in-tree - the one shipped sing-box.exe loads - pinned to a
+/// commit and checked by git blob sha, like the Psiphon engine.
+const WINTUN_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-tun/611d83b7a57b4719be45581eb674942ff561de6c/internal/wintun/amd64/wintun.dll";
+const WINTUN_BLOB_SHA: &str = "aee04e77bfbd6601adbcd5a46435f059e31cf6e4";
 /// This app's own release feed: startup update check + download link.
 const APP_REPO: &str = "pourjahani/MahsaDesk";
 
@@ -424,14 +431,8 @@ fn source_for(key: &str) -> Result<Option<ZipFetch>, String> {
             ),
             zip_member: "sing-box.exe".into(),
         }),
-        "wintun" => Some(ZipFetch {
-            // wintun.dll rides along in the sing-box archive
-            zip_url: format!(
-                "https://github.com/SagerNet/sing-box/releases/download/v{}/sing-box-{}-windows-amd64.zip",
-                SINGBOX_PINNED, SINGBOX_PINNED
-            ),
-            zip_member: "wintun.dll".into(),
-        }),
+        // not a zip: fetched and verified directly in upgrade()
+        "wintun" => None,
         "geo" => None, // handled by the existing download_geo command
         _ => return Ok(None),
     })
@@ -479,6 +480,21 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
                 std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
                 write_marker(&dst, &hash);
             }
+        }
+        "wintun" => {
+            // Raw file, not an archive member - pin it by git blob sha so a
+            // swapped-in DLL can never reach the binaries folder.
+            let bytes = fetch_verified(WINTUN_URL, None).await?;
+            let local = git_blob_sha1(&bytes);
+            if local != WINTUN_BLOB_SHA {
+                return Err(format!(
+                    "wintun integrity check failed: published {} != downloaded {}",
+                    WINTUN_BLOB_SHA, local
+                ));
+            }
+            let dst = dir.join("wintun.dll");
+            std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
+            write_marker(&dst, &sha256_bytes(&bytes));
         }
         other => {
             let Some(ZipFetch { zip_url, zip_member }) = source_for(other)? else {
@@ -686,6 +702,14 @@ mod tests {
     fn git_blob_sha1_matches_git_hash_object() {
         // $ echo -n $'hello\n' | git hash-object --stdin
         assert_eq!(git_blob_sha1(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
+    }
+
+    #[test]
+    fn wintun_is_never_sourced_from_the_sing_box_archive() {
+        // The sing-box windows archive contains only LICENSE and sing-box.exe,
+        // so a zip fetch for wintun.dll always ended in
+        // "member matching pattern not found in C:\...\mahsareq-wintun-*.zip".
+        assert!(source_for("wintun").unwrap().is_none());
     }
 
     #[test]
