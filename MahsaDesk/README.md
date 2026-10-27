@@ -42,6 +42,12 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.8
+
+- **`wintun.dll` now actually ships** - the TUN driver was never included in the portable zip: the build and the in-app "Upgrade" both looked for it inside the sing-box archive, which only contains `sing-box.exe` and `LICENSE`, so the Requirements card always reported it missing and its upgrade failed with a "member not found" Temp-zip error. It is now downloaded from its official pinned source, verified, packaged next to the exe, and upgraded in place
+- **Build fails fast on an incomplete bundle** - the download script throws if any of the six required engines is absent, so a release can no longer be published silently missing a binary
+- **"Update all" no longer stops at the first failure** - previously the always-missing `wintun.dll` aborted the loop, so geo data and the Psiphon engine never updated
+
 ### New in v0.3.7
 
 - **Psiphon fixed** - the engine rejected the generated config (a non-integer ClientVersion) and exited instantly, so both Psiphon modes failed to start; it now starts reliably again
