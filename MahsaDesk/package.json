@@ -1,7 +1,7 @@
 {
   "name": "mahsa-desk",
   "private": true,
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "MahsaDesk - free v2ray/xray client for Windows (desktop port of MahsaNG)",
   "type": "module",
   "scripts": {
