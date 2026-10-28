@@ -40,6 +40,40 @@ fn binaries_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// True when this process runs as the portable build: CI renames the exe to
+/// `MahsaDeskPortable.exe` and ships its `binaries/` folder next to it, so an
+/// exe whose file stem ends in "portable" is that build (the installed app is
+/// always `MahsaDesk.exe`).
+fn is_portable_exe(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase().ends_with("portable"))
+        .unwrap_or(false)
+}
+
+/// Where settings, servers, subscriptions, generated configs and downloaded
+/// geo data live.
+///
+/// The installed app and dev builds keep Tauri's profile directory
+/// (`%APPDATA%\com.mahsadesk.desktop`). The portable build instead owns
+/// `<exe dir>\data`, so extracting it next to an installed copy can never read
+/// or overwrite that profile.
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(dir) = portable_data_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        return Ok(dir);
+    }
+    app.path().app_config_dir().map_err(|e| e.to_string())
+}
+
+/// `<exe dir>\data` when running the portable exe, `None` otherwise.
+fn portable_data_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if !is_portable_exe(&exe) {
+        return None;
+    }
+    exe.parent().map(|d| d.join("data"))
+}
+
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
@@ -142,7 +176,7 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
 }
 
 fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(app)?;
 
     let (mut settings, servers, logs) = {
         let arc = state(&app.state::<ManagedState>());
@@ -484,7 +518,7 @@ fn set_settings(
     st: State<ManagedState>,
     new_settings: Settings,
 ) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     let old_autostart = g.settings.launch_at_login;
@@ -511,7 +545,7 @@ fn list_servers(st: State<ManagedState>) -> Vec<ServerProfile> {
 
 #[tauri::command]
 fn save_server(app: AppHandle, st: State<ManagedState>, dir_server: ServerProfile) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     if let Some(pos) = g.servers.iter().position(|p| p.id == dir_server.id) {
@@ -538,7 +572,7 @@ fn remove_servers(g: &mut AppState, dir: &PathBuf, ids: &[String]) -> Result<(),
 
 #[tauri::command]
 fn delete_server(app: AppHandle, st: State<ManagedState>, id: String) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     remove_servers(&mut g, &dir, std::slice::from_ref(&id))
@@ -550,7 +584,7 @@ fn delete_servers(app: AppHandle, st: State<ManagedState>, ids: Vec<String>) -> 
     if ids.is_empty() {
         return Ok(());
     }
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     remove_servers(&mut g, &dir, &ids)
@@ -837,7 +871,7 @@ fn share_server_status(st: State<ManagedState>) -> Option<share::ShareInfo> {
 
 #[tauri::command]
 fn set_active(app: AppHandle, st: State<ManagedState>, id: String) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     g.settings.active_server = id;
@@ -861,7 +895,7 @@ async fn import_links(
     } else {
         trimmed
     };
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let profiles = servers::parse_payload(&payload);
     let n = profiles.len();
     if n == 0 {
@@ -894,7 +928,7 @@ async fn add_subscription(
     update_interval_hours: u32,
     update_now: bool,
 ) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let sub = Subscription {
         id: format!("sub-{}", chrono_secs()),
         name,
@@ -975,7 +1009,7 @@ fn list_subscriptions(st: State<ManagedState>) -> Vec<Subscription> {
 
 #[tauri::command]
 fn edit_subscription(app: AppHandle, st: State<ManagedState>, sub: Subscription) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     for s in g.subs.subs.iter_mut() {
@@ -992,7 +1026,7 @@ fn delete_subscription(
     st: State<ManagedState>,
     id: String,
 ) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
     g.subs.subs.retain(|x| x.id != id);
@@ -1016,7 +1050,7 @@ async fn update_subscription(
     st: State<'_, ManagedState>,
     id: String,
 ) -> Result<usize, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     update_subscription_impl(&app, st, id, dir).await
 }
 
@@ -1175,7 +1209,7 @@ fn clear_logs(st: State<ManagedState>) {
 /// Rolling crash history written by the core monitor (#23).
 #[tauri::command]
 fn get_crash_history(app: AppHandle) -> Vec<serde_json::Value> {
-    let Ok(dir) = app.path().app_config_dir() else {
+    let Ok(dir) = data_dir(&app) else {
         return Vec::new();
     };
     std::fs::read_to_string(dir.join("crash-history.json"))
@@ -1227,7 +1261,7 @@ fn export_config(_app: AppHandle, st: State<ManagedState>) -> Result<String, Str
 
 #[tauri::command]
 fn import_config(app: AppHandle, st: State<ManagedState>, json_text: String) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let v: serde_json::Value =
         serde_json::from_str(&json_text).map_err(|e| format!("invalid JSON: {}", e))?;
     let arc = state(&st);
@@ -1257,7 +1291,7 @@ fn import_config(app: AppHandle, st: State<ManagedState>, json_text: String) -> 
 
 #[tauri::command]
 async fn download_geo(app: AppHandle) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     for (fname, url) in [
         (
             "geoip.dat",
@@ -1284,8 +1318,7 @@ async fn download_geo(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn geo_files_exist(app: AppHandle) -> bool {
-    app.path()
-        .app_config_dir()
+    data_dir(&app)
         .map(|dir| dir.join("geoip.dat").exists() && dir.join("geosite.dat").exists())
         .unwrap_or(false)
 }
@@ -1530,7 +1563,7 @@ struct AssetInfo {
 #[tauri::command]
 fn assets_info(app: AppHandle) -> Vec<AssetInfo> {
     let mut out = Vec::new();
-    if let Ok(dir) = app.path().app_config_dir() {
+    if let Ok(dir) = data_dir(&app) {
         for f in ["geoip.dat", "geosite.dat"] {
             let p = dir.join(f);
             out.push(AssetInfo {
@@ -1548,7 +1581,7 @@ fn delete_geo(app: AppHandle, name: String) -> Result<(), String> {
     if name != "geoip.dat" && name != "geosite.dat" {
         return Err("bad asset name".into());
     }
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     let p = dir.join(&name);
     if p.exists() {
         std::fs::remove_file(&p).map_err(|e| e.to_string())?;
@@ -1644,10 +1677,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
-            let dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|e| format!("no app config dir: {}", e))?;
+            let dir = data_dir(app.handle())
+                .map_err(|e| format!("no app data dir: {}", e))?;
             std::fs::create_dir_all(&dir).ok();
 
             let settings = Settings::load(&dir);
@@ -1767,4 +1798,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_portable_exe;
+    use std::path::Path;
+
+    #[test]
+    fn portable_detection_keys_off_the_exe_name() {
+        // what CI ships
+        assert!(is_portable_exe(Path::new(
+            r"C:\Users\x\Desktop\MahsaDesk\MahsaDeskPortable.exe"
+        )));
+        assert!(is_portable_exe(Path::new("MahsaDeskPORTABLE.exe")));
+        // installed app and dev binary keep the shared profile
+        assert!(!is_portable_exe(Path::new(
+            r"C:\Program Files\MahsaDesk\MahsaDesk.exe"
+        )));
+        assert!(!is_portable_exe(Path::new(r"target\release\mahsadesk.exe")));
+    }
 }
