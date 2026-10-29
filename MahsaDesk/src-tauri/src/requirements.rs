@@ -144,6 +144,11 @@ fn write_marker(file: &Path, sha256_hex: &str) {
     );
 }
 
+/// Write the verification marker for a geo data file after downloading it.
+pub fn write_geo_marker(file: &Path, bytes: &[u8]) {
+    write_marker(file, &sha256_bytes(bytes));
+}
+
 /// True when the file exists and its sha256 matches its pinned marker.
 fn marker_verified(dir: &Path, name: &str) -> bool {
     let file = dir.join(name);
@@ -380,7 +385,12 @@ pub async fn github_asset_digest(
 /// Download `url`; when the publisher exposes an expected sha256, refuse
 /// anything that doesn't match it. Returns the raw bytes either way.
 pub async fn fetch_verified(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
-    let resp = http().get(url).send().await.map_err(|e| e.to_string())?;
+    let resp = http().get(url).send().await.map_err(|e| {
+        format!(
+            "network error downloading from {}: {}. Check internet access or the Windows system proxy, then retry.",
+            url, e
+        )
+    })?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {} from {}", resp.status(), url));
     }
@@ -476,9 +486,20 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
                     github_asset_digest("Loyalsoldier/v2ray-rules-dat", None, fname).await;
                 let bytes = fetch_verified(url, expected.as_deref()).await?;
                 let dst = dir.join(fname);
-                let hash = sha256_bytes(&bytes);
-                std::fs::write(&dst, &bytes).map_err(|e| e.to_string())?;
-                write_marker(&dst, &hash);
+                let tmp = dir.join(format!("{}.download", fname));
+                std::fs::write(&tmp, &bytes)
+                    .map_err(|e| format!("failed to save {}: {}", fname, e))?;
+                // Windows rename does not replace an existing destination.
+                // Remove the old file only after the new download is complete.
+                if dst.exists() {
+                    std::fs::remove_file(&dst)
+                        .map_err(|e| format!("failed to replace {}: {}", fname, e))?;
+                }
+                if let Err(e) = std::fs::rename(&tmp, &dst) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!("failed to install {}: {}", fname, e));
+                }
+                write_geo_marker(&dst, &bytes);
             }
         }
         "wintun" => {

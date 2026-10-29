@@ -44,7 +44,12 @@ pub async fn fetch_payload(url: &str) -> Result<String, String> {
         .header("User-Agent", "MahsaDesk/0.1")
         .send()
         .await
-        .map_err(|e| format!("fetch: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "subscription fetch failed: {}. Check internet access or connect through a working proxy, then retry.",
+                e
+            )
+        })?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }

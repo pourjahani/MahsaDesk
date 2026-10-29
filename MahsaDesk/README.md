@@ -42,6 +42,11 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.10
+
+- **Windows proxy-aware downloads** - geo-file and subscription requests now use the Windows system proxy settings, which fixes download failures on PCs that require a proxy; geo files also download through the verified asset path and can fall back to the copies bundled with the portable app
+- **Subscription failures are recoverable** - a failed first refresh no longer hides the saved subscription, and network errors include guidance for retrying
+
 ### New in v0.3.9
 
 - **The portable build is truly portable** - `MahsaDeskPortable.exe` now keeps its settings, servers, subscriptions, generated configs and downloaded geo data in a `data/` folder next to the exe instead of sharing the installed app's `%APPDATA%\com.mahsadesk.desktop` profile; extracting it beside an installed copy can neither read nor overwrite your saved config. It therefore starts with an empty server list - import your config once into its `data/`

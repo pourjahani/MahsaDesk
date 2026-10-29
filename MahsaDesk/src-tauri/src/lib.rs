@@ -1292,28 +1292,30 @@ fn import_config(app: AppHandle, st: State<ManagedState>, json_text: String) -> 
 #[tauri::command]
 async fn download_geo(app: AppHandle) -> Result<(), String> {
     let dir = data_dir(&app)?;
-    for (fname, url) in [
-        (
-            "geoip.dat",
-            "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-        ),
-        (
-            "geosite.dat",
-            "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-        ),
-    ] {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {} while downloading {}", resp.status(), fname));
+    match requirements::upgrade(&dir, "geo").await {
+        Ok(_) => Ok(()),
+        Err(download_error) => {
+            // Portable releases already include a known-good geoip/geosite
+            // pair in binaries/. Use it when GitHub is unreachable on a new
+            // PC, while keeping the network error if the package lacks them.
+            let bundled = binaries_dir(&app)?;
+            copy_if_needed(&bundled, &dir)?;
+            let have_geo = ["geoip.dat", "geosite.dat"].iter().all(|name| {
+                dir.join(name)
+                    .metadata()
+                    .map(|meta| meta.is_file() && meta.len() > 0)
+                    .unwrap_or(false)
+            });
+            if have_geo {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{}; no complete bundled geo data was available for offline fallback",
+                    download_error
+                ))
+            }
         }
-        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-        std::fs::write(dir.join(fname), &bytes).map_err(|e| e.to_string())?;
     }
-    Ok(())
 }
 
 #[tauri::command]

@@ -1053,6 +1053,13 @@ function renderSubs() {
         await refreshData();
         renderView();
       } catch (e: any) {
+        const saved = (await api.listSubscriptions().catch(() => [])).some(
+          (sub) => sub.url === src.url
+        );
+        if (saved) {
+          await refreshData();
+          renderView();
+        }
         alert(`${t("error")}: ${e}`);
         btn.disabled = false;
         btn.textContent = t("subs.addOne");
@@ -1188,6 +1195,14 @@ function subDialog(s: Subscription | null) {
       await refreshData();
       renderView();
     } catch (e: any) {
+      const saved = !s && (await api.listSubscriptions().catch(() => [])).some(
+        (sub) => sub.url === inUrl.value.trim()
+      );
+      if (saved) {
+        dlg.remove();
+        await refreshData();
+        renderView();
+      }
       alert(`${t("error")}: ${e}`);
     }
   };
