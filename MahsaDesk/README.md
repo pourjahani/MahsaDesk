@@ -42,6 +42,13 @@ The app is available as both an NSIS installer and a portable executable.
 - **Persian (RTL) and English** interface with automatic direction switching
 - **Config export/import** of the whole pool (servers + subs + settings) as JSON
 
+### New in v0.3.11
+
+- **Downloads no longer dead-end on a fresh PC** - engine upgrades, geo files and subscription links all share one download path that now tries the app's own tunnel, then the Windows proxy, then a direct connection, and only then gives up - with a message that lists every route it tried and the real cause (refused, timed out, certificate, HTTP status) instead of reqwest's unexplained "error sending request for url (...)". A stale Windows proxy left behind by another client, a filtered direct route, or TLS intercepted by antivirus no longer breaks every download at once
+- **Native Windows certificate store** - TLS uses the OS trust store, so a security product or corporate proxy that installs its own root certificate no longer blocks GitHub downloads
+- **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
+- **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
+
 ### New in v0.3.10
 
 - **Windows proxy-aware downloads** - geo-file and subscription requests now use the Windows system proxy settings, which fixes download failures on PCs that require a proxy; geo files also download through the verified asset path and can fall back to the copies bundled with the portable app

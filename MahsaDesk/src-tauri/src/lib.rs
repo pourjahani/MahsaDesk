@@ -3,6 +3,7 @@ pub mod core;
 pub mod gate;
 pub mod hy2;
 pub mod isp;
+pub mod net;
 pub mod ports;
 pub mod psiphon;
 pub mod proc;
@@ -72,6 +73,38 @@ fn portable_data_dir() -> Option<PathBuf> {
         return None;
     }
     exe.parent().map(|d| d.join("data"))
+}
+
+/// True when this process is the portable build (installs the release zip
+/// instead of the NSIS setup exe).
+fn portable_build() -> bool {
+    std::env::current_exe()
+        .map(|e| is_portable_exe(&e))
+        .unwrap_or(false)
+}
+
+/// Point the shared download transport at the routes that can work on this
+/// machine: the user's download proxy, then the app's own tunnel while it is
+/// connected. `net` always appends the system proxy and a direct attempt.
+fn refresh_download_proxies(app: &AppHandle) {
+    let mut list: Vec<String> = Vec::new();
+    let arc = state(&app.state::<ManagedState>());
+    {
+        let g = arc.lock().unwrap();
+        if !g.settings.download_proxy.trim().is_empty() {
+            list.push(g.settings.download_proxy.clone());
+        }
+        // A running tunnel is the one proxy guaranteed to work on a filtered
+        // network, so geo data and engine upgrades go through it.
+        if g.mode == Some(Mode::PsiphonOnly) {
+            list.push(format!("http://127.0.0.1:{}", g.settings.psiphon_http_port));
+            list.push(format!("socks5h://127.0.0.1:{}", g.settings.psiphon_socks_port));
+        } else if g.mode.is_some() || g.core_handle.is_some() {
+            list.push(format!("http://127.0.0.1:{}", g.settings.http_port));
+            list.push(format!("socks5h://127.0.0.1:{}", g.settings.socks_port));
+        }
+    }
+    net::set_proxies(list);
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +559,8 @@ fn set_settings(
     new_settings.save(&dir)?;
     g.settings = new_settings;
     drop(g);
+
+    refresh_download_proxies(&app);
 
     if new_autostart != old_autostart {
         let mgr = app.autolaunch();
@@ -1156,12 +1191,15 @@ fn connect(app: AppHandle, mode: String) -> Result<(), String> {
         "psiphon-after" => Mode::PsiphonAfter,
         _ => Mode::SystemProxy,
     };
-    connect_mode(&app, mode)
+    connect_mode(&app, mode)?;
+    refresh_download_proxies(&app);
+    Ok(())
 }
 
 #[tauri::command]
 fn disconnect_cmd(app: AppHandle) -> Result<(), String> {
     let _ = disconnect(&app);
+    refresh_download_proxies(&app);
     Ok(())
 }
 
@@ -1547,7 +1585,206 @@ async fn requirements_upgrade(app: AppHandle, key: String) -> Result<requirement
 
 #[tauri::command]
 async fn app_update_check() -> requirements::AppUpdateInfo {
-    requirements::check_app_update(env!("CARGO_PKG_VERSION")).await
+    requirements::check_app_update(env!("CARGO_PKG_VERSION"), portable_build()).await
+}
+
+/// Download the update the UI picked into `%TEMP%`, emitting
+/// `app-update-progress` as it goes, and return the file path.
+#[tauri::command]
+async fn app_update_download(
+    app: AppHandle,
+    url: String,
+    version: String,
+    sha256: Option<String>,
+) -> Result<String, String> {
+    // The URL comes from release metadata, so pin it to this project's release
+    // assets: an updater that installs an arbitrary executable is exactly the
+    // door not to leave open.
+    if !url.starts_with("https://github.com/pourjahani/MahsaDesk/") {
+        return Err(format!("refusing to install an update from {}", url));
+    }
+    let ext = if url.to_ascii_lowercase().ends_with(".zip") {
+        "zip"
+    } else {
+        "exe"
+    };
+    let safe_version: String = version
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.')
+        .collect();
+    let dest = std::env::temp_dir().join(format!(
+        "MahsaDesk-update-{}.{}",
+        if safe_version.is_empty() { "latest".to_string() } else { safe_version },
+        ext
+    ));
+    let emit_app = app.clone();
+    net::download_file(
+        &url,
+        &dest,
+        sha256.as_deref().filter(|s| !s.is_empty()),
+        &move |done, total| {
+            let _ = emit_app.emit(
+                "app-update-progress",
+                serde_json::json!({ "downloaded": done, "total": total }),
+            );
+        },
+    )
+    .await?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Hand the downloaded update to a detached helper script and restart.
+///
+/// The running exe (and, in portable mode, the engine binaries next to it)
+/// cannot be replaced while this process holds them, so the helper waits for
+/// this PID to exit, stops any orphaned engines, installs, and relaunches.
+#[tauri::command]
+fn app_update_install(app: AppHandle, path: String, portable: bool) -> Result<(), String> {
+    let file = PathBuf::from(&path);
+    if !file.exists() {
+        return Err(format!("the downloaded update is missing: {}", path));
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate this app: {}", e))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or("cannot locate the app folder")?
+        .to_path_buf();
+
+    // Free the ports, the proxy setting and the engine files first.
+    let _ = disconnect(&app);
+
+    let (staged_exe, stage) = if portable {
+        let stage = std::env::temp_dir().join(format!(
+            "MahsaDesk-update-stage-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&stage);
+        std::fs::create_dir_all(&stage).map_err(|e| format!("cannot prepare the update: {}", e))?;
+        extract_zip(&file, &stage)?;
+        let new_exe = std::fs::read_dir(&stage)
+            .map_err(|e| format!("cannot read the update: {}", e))?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.extension()
+                    .map(|x| x.eq_ignore_ascii_case("exe"))
+                    .unwrap_or(false)
+            })
+            .ok_or("the update archive contains no executable")?;
+        (Some(new_exe), Some(stage))
+    } else {
+        (None, None)
+    };
+
+    let script = update_script(
+        std::process::id(),
+        &exe_dir,
+        &exe,
+        portable,
+        staged_exe.as_deref(),
+        stage.as_deref(),
+        &file,
+    );
+    let script_path = std::env::temp_dir().join(format!(
+        "mahsadesk-update-{}.cmd",
+        std::process::id()
+    ));
+    std::fs::write(&script_path, script)
+        .map_err(|e| format!("cannot write the update helper: {}", e))?;
+
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg(&script_path);
+    proc::hide(&mut cmd)
+        .spawn()
+        .map_err(|e| format!("could not start the updater: {}", e))?;
+
+    // Let this invoke return before the window goes away.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        handle.exit(0);
+    });
+    Ok(())
+}
+
+/// Extract every entry of `zip_path` under `dest`, refusing paths that would
+/// escape it.
+fn extract_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("cannot open the update: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("not a valid update archive: {}", e))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(rel) = entry.enclosed_name() else {
+            continue;
+        };
+        let out = dest.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).ok();
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let mut f = std::fs::File::create(&out)
+            .map_err(|e| format!("cannot write {}: {}", out.display(), e))?;
+        std::io::copy(&mut entry, &mut f).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The batch file that replaces the app after it exits. Hidden by
+/// `proc::hide`, so the user only sees the app closing and reopening.
+fn update_script(
+    pid: u32,
+    exe_dir: &std::path::Path,
+    exe: &std::path::Path,
+    portable: bool,
+    staged_exe: Option<&std::path::Path>,
+    stage: Option<&std::path::Path>,
+    file: &std::path::Path,
+) -> String {
+    let q = |p: &std::path::Path| format!("\"{}\"", p.display());
+    let mut s = String::new();
+    s.push_str("@echo off\r\nsetlocal enabledelayedexpansion\r\n");
+    // Exact, non-polling wait: this process must release the .exe first.
+    s.push_str(&format!(
+        "powershell -NoProfile -WindowStyle Hidden -Command \"Wait-Process -Id {} -ErrorAction SilentlyContinue\"\r\n",
+        pid
+    ));
+    // ping, not timeout: this cmd runs with no console, and timeout refuses to
+    // wait when its input is redirected
+    s.push_str("ping -n 3 127.0.0.1 >nul\r\n");
+    for image in ["xray.exe", "sing-box.exe", psiphon::EXE_NAME] {
+        s.push_str(&format!("taskkill /IM {} /F >nul 2>&1\r\n", image));
+    }
+    if portable {
+        if let (Some(staged), Some(stage)) = (staged_exe, stage) {
+            // Retry the exe swap: a security product scanning the file we just
+            // released can hold it open for a few seconds.
+            s.push_str("set /a tries=0\r\n:copyexe\r\n");
+            s.push_str(&format!("copy /y {} {} >nul 2>&1\r\n", q(staged), q(exe)));
+            s.push_str(
+                "if errorlevel 1 (\r\n  set /a tries+=1\r\n  if !tries! lss 5 (\r\n    ping -n 2 127.0.0.1 >nul\r\n    goto copyexe\r\n  )\r\n)\r\n",
+            );
+            let binaries = stage.join("binaries");
+            if binaries.is_dir() {
+                s.push_str(&format!(
+                    "xcopy /e /i /y {} {} >nul\r\n",
+                    q(&binaries),
+                    q(&exe_dir.join("binaries"))
+                ));
+            }
+        }
+    } else {
+        // NSIS silent install, then the same exe path is relaunched below
+        s.push_str(&format!("start \"\" /wait {} /S\r\n", q(file)));
+    }
+    // relaunch: guard the path, so a moved install cannot leave the user with
+    // no app at all
+    s.push_str(&format!("if exist {} start \"\" {}\r\n", q(exe), q(exe)));
+    s.push_str("(del /f /q \"%~f0\") >nul 2>&1\r\nexit /b 0\r\n");
+    s
 }
 
 #[tauri::command]
@@ -1700,6 +1937,8 @@ pub fn run() {
                 logs: logs.clone(),
             }))));
 
+            refresh_download_proxies(app.handle());
+
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
@@ -1796,7 +2035,9 @@ pub fn run() {
             net_speed_cmd,
             requirements_status,
             requirements_upgrade,
-            app_update_check
+            app_update_check,
+            app_update_download,
+            app_update_install
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

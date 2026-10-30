@@ -33,38 +33,20 @@ pub fn save_subs(dir: &PathBuf, subs: &SubsFile) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| e.to_string())
 }
 
-/// Fetch a subscription URL and return the raw payload (base64 or plain link list).
+/// Cap the body: a hostile or broken endpoint must not be able to exhaust
+/// memory - the biggest real subscriptions are a few MB.
+const MAX_BODY: usize = 32 * 1024 * 1024;
+
+/// Fetch a subscription URL and return the raw payload (base64 or plain link
+/// list).
+///
+/// Goes through `net::` like every other download, so a subscription link still
+/// loads when the Windows proxy is stale but the direct route works, or when it
+/// only works through the app's own tunnel.
 pub async fn fetch_payload(url: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut resp = client
-        .get(url)
-        .header("User-Agent", "MahsaDesk/0.1")
-        .send()
-        .await
-        .map_err(|e| {
-            format!(
-                "subscription fetch failed: {}. Check internet access or connect through a working proxy, then retry.",
-                e
-            )
-        })?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+    let url = url.trim();
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("subscription URL must start with http:// or https://".into());
     }
-    // Cap the body: a hostile or broken endpoint must not be able to exhaust
-    // memory - the biggest real subscriptions are a few MB.
-    const MAX_BODY: usize = 32 * 1024 * 1024;
-    if resp.content_length().unwrap_or(0) as usize > MAX_BODY {
-        return Err("subscription too large (over 32 MB)".into());
-    }
-    let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if buf.len() + chunk.len() > MAX_BODY {
-            return Err("subscription too large (over 32 MB)".into());
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    crate::net::get_text(url, std::time::Duration::from_secs(20), MAX_BODY).await
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mahsadesk"
-version = "0.3.10"
+version = "0.3.11"
 description = "MahsaDesk - free v2ray/xray client for Windows"
 authors = ["MahsaDesk"]
 edition = "2021"
@@ -20,7 +20,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 sysproxy = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "socks", "json", "system-proxy"] }
+# native-roots, not the bundled webpki roots: an antivirus or enterprise
+# proxy that intercepts TLS is trusted when it installs into the Windows
+# certificate store, and downloads from GitHub stop failing with an opaque
+# certificate error on those machines.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "blocking", "socks", "json", "system-proxy"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 urlencoding = "2"
 rand = "0.8"

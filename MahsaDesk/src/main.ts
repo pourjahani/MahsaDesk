@@ -197,6 +197,34 @@ function openExternal(url: string) {
   if (!(window as any).__TAURI__) window.open(url, "_blank");
 }
 
+/** Download the asset that matches this build, then install and restart. */
+async function runAppUpdate(u: AppUpdateInfo, btn: HTMLButtonElement) {
+  const url = u.portable ? u.portable_url || u.download_url : u.installer_url || u.download_url;
+  if (!url) {
+    openExternal(u.release_url);
+    return;
+  }
+  const sha = (u.portable ? u.portable_sha256 : u.installer_sha256) || null;
+  btn.disabled = true;
+  btn.textContent = t("update.downloading");
+  const unlisten = await api.onAppUpdateProgress((downloaded, total) => {
+    const pct = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
+    btn.textContent = pct == null ? t("update.downloading") : `${t("update.downloading")} ${pct}%`;
+  });
+  try {
+    const path = await api.appUpdateDownload(url, u.latest_version, sha);
+    btn.textContent = t("update.preparing");
+    // the helper closes this app, installs and relaunches it
+    await api.appUpdateInstall(path, !!u.portable);
+  } catch (e: any) {
+    btn.disabled = false;
+    btn.textContent = t("update.install");
+    alert(`${t("update.installFailed")}: ${e}`);
+  } finally {
+    unlisten();
+  }
+}
+
 function buildUpdateBanner(): HTMLElement {
   const info = updateInfo!;
   const card = el("div", "card update-banner");
@@ -205,9 +233,9 @@ function buildUpdateBanner(): HTMLElement {
     el("p", "", `${t("update.current")}: ${info.current_version}  ->  ${t("update.latest")}: ${info.latest_version}`)
   );
   const actions = el("div", "actions");
-  if (info.download_url) {
-    const dl = el("button", "btn primary", t("update.download"));
-    dl.onclick = () => openExternal(info.download_url);
+  if (info.installer_url || info.portable_url || info.download_url) {
+    const dl = el("button", "btn primary", t("update.install"));
+    dl.onclick = () => runAppUpdate(info, dl);
     actions.append(dl);
   }
   const page = el("button", "btn", t("update.release"));
@@ -1530,9 +1558,9 @@ async function renderAppUpdateCard(wrap: HTMLElement) {
     updateInfo = u;
     if (u.update_available) {
       info.textContent = `${t("update.current")}: ${u.current_version}  ->  ${t("update.latest")}: ${u.latest_version}`;
-      if (u.download_url) {
-        const dl = el("button", "btn primary", t("update.download"));
-        dl.onclick = () => openExternal(u.download_url);
+      if (u.installer_url || u.portable_url || u.download_url) {
+        const dl = el("button", "btn primary", t("update.install"));
+        dl.onclick = () => runAppUpdate(u, dl);
         actions.append(dl);
       }
     } else {
@@ -1541,6 +1569,20 @@ async function renderAppUpdateCard(wrap: HTMLElement) {
     const page = el("button", "btn", t("update.release"));
     page.onclick = () => openExternal(u.release_url);
     actions.append(page);
+    const check = el("button", "btn", t("update.check"));
+    check.onclick = async () => {
+      check.disabled = true;
+      info.textContent = t("update.checking");
+      try {
+        updateInfo = await api.appUpdateCheck();
+        updateDismissed = false;
+        renderView();
+      } catch {
+        info.textContent = t("update.checkFailed");
+        check.disabled = false;
+      }
+    };
+    actions.append(check);
   } catch {
     info.textContent = t("update.checkFailed");
   }
@@ -2414,6 +2456,7 @@ function renderSettings() {
       ["none", "none"],
     ]),
     mkInput(t("settings.remoteDns"), "remote_dns"),
+    mkInput(t("settings.downloadProxy"), "download_proxy"),
     mkSelect(t("routing.domainStrategy"), "domain_strategy", [
       ["IPIfNonMatch", "IPIfNonMatch"],
       ["AsIs", "AsIs"],
@@ -2421,6 +2464,7 @@ function renderSettings() {
     ])
   );
   conn.append(connGrid);
+  conn.append(el("p", "muted", t("settings.downloadProxyHint")));
   conn.append(
     mkSwitch(t("settings.sniffing"), "sniffing"),
     mkSwitch(t("settings.allowInsecure"), "allow_insecure"),

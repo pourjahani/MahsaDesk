@@ -15,6 +15,10 @@ pub struct Settings {
     pub allow_insecure: bool,
     pub mux: bool,
     pub ipv6: bool,
+    /// Optional proxy used only for downloads (engine upgrades, geo data,
+    /// subscription links, app updates). Empty = try the app's own tunnel,
+    /// then the system proxy, then a direct connection.
+    pub download_proxy: String,
     pub remote_dns: String,      // e.g. "1.1.1.1"
     pub routing_preset: String,  // "global" | "ir" | "ir_cn"
     pub custom_proxy: String,    // newline separated domains
@@ -70,6 +74,7 @@ impl Default for Settings {
             allow_insecure: false,
             mux: false,
             ipv6: false,
+            download_proxy: String::new(),
             remote_dns: "1.1.1.1".into(),
             routing_preset: "global".into(),
             custom_proxy: String::new(),

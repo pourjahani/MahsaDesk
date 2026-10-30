@@ -4,6 +4,7 @@
 //! wintun, geo data, the Psiphon engine). This module lets the UI verify what
 //! is present, report versions, and pull newer copies.
 
+use crate::net;
 use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -28,14 +29,6 @@ const WINTUN_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-tun/61
 const WINTUN_BLOB_SHA: &str = "aee04e77bfbd6601adbcd5a46435f059e31cf6e4";
 /// This app's own release feed: startup update check + download link.
 const APP_REPO: &str = "pourjahani/MahsaDesk";
-
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .user_agent("MahsaDesk")
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
 
 #[derive(Serialize, Clone)]
 pub struct ReqInfo {
@@ -79,7 +72,7 @@ fn file_probe(dir: &Path, name: &str) -> Option<(u64, Option<String>)> {
 /// build script uses).
 pub async fn github_latest_tag(repo: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
-    let v: serde_json::Value = http().get(&url).send().await.ok()?.json().await.ok()?;
+    let v: serde_json::Value = net::get_json(&url, Duration::from_secs(20)).await.ok()?;
     v.get("tag_name")
         .and_then(|t| t.as_str())
         .map(|s| s.trim_start_matches('v').to_string())
@@ -87,12 +80,7 @@ pub async fn github_latest_tag(repo: &str) -> Option<String> {
 
 /// Blob sha of the current Psiphon engine binary (rolling master branch).
 pub async fn psiphon_engine_sha() -> Option<String> {
-    let v: serde_json::Value = http()
-        .get(PSIPHON_SHA_URL)
-        .send()
-        .await
-        .ok()?
-        .json()
+    let v: serde_json::Value = net::get_json(PSIPHON_SHA_URL, Duration::from_secs(20))
         .await
         .ok()?;
     v.get("sha").and_then(|s| s.as_str()).map(|s| s.to_string())
@@ -369,7 +357,7 @@ pub async fn github_asset_digest(
         Some(t) => format!("https://api.github.com/repos/{}/releases/tags/{}", repo, t),
         None => format!("https://api.github.com/repos/{}/releases/latest", repo),
     };
-    let v: serde_json::Value = http().get(&url).send().await.ok()?.json().await.ok()?;
+    let v: serde_json::Value = net::get_json(&url, Duration::from_secs(20)).await.ok()?;
     let assets = v.get("assets")?.as_array()?;
     let digest = assets
         .iter()
@@ -385,16 +373,10 @@ pub async fn github_asset_digest(
 /// Download `url`; when the publisher exposes an expected sha256, refuse
 /// anything that doesn't match it. Returns the raw bytes either way.
 pub async fn fetch_verified(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
-    let resp = http().get(url).send().await.map_err(|e| {
-        format!(
-            "network error downloading from {}: {}. Check internet access or the Windows system proxy, then retry.",
-            url, e
-        )
-    })?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {} from {}", resp.status(), url));
-    }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    // net:: walks every transport (own tunnel, system proxy, direct) and, when
+    // none of them works, reports each route's real cause instead of reqwest's
+    // bare "error sending request for url (...)".
+    let bytes = net::get_bytes(url, Duration::from_secs(300)).await?;
     let actual = sha256_bytes(&bytes);
     if let Some(expected) = expected_sha256 {
         if !expected.eq_ignore_ascii_case(&actual) {
@@ -549,15 +531,93 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
 // Self-update check (same pattern as the requirements card)
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct AppUpdateInfo {
     pub current_version: String,
     pub latest_version: String,
     pub update_available: bool,
     /// Direct installer asset URL, or "" when the release has none.
     pub download_url: String,
+    /// NSIS setup exe and the sha256 GitHub publishes for it.
+    pub installer_url: String,
+    pub installer_sha256: String,
+    /// Portable zip and its sha256: what a portable build installs.
+    pub portable_url: String,
+    pub portable_sha256: String,
     /// Human release / download page.
     pub release_url: String,
+    /// Release notes (markdown), trimmed for the UI.
+    pub notes: String,
+    /// True when the running build is the portable one.
+    pub portable: bool,
+}
+
+/// The two artifacts the updater can install, resolved from a release.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ReleaseAssets {
+    installer_url: String,
+    installer_sha256: String,
+    portable_url: String,
+    portable_sha256: String,
+}
+
+/// Pick the setup exe and the portable zip out of a release's assets. The
+/// digest is the `sha256:...` value GitHub publishes per asset since 2025; it
+/// is empty for releases that predate that.
+fn pick_release_assets(rel: &serde_json::Value) -> ReleaseAssets {
+    let mut out = ReleaseAssets::default();
+    let Some(assets) = rel.get("assets").and_then(|a| a.as_array()) else {
+        return out;
+    };
+    for a in assets {
+        let name = a
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let url = a
+            .get("browser_download_url")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+        let digest = a
+            .get("digest")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .trim_start_matches("sha256:")
+            .to_ascii_lowercase();
+        if !name.ends_with(".zip") && !name.ends_with(".exe") {
+            continue;
+        }
+        if name.ends_with(".zip") && name.contains("port") {
+            if out.portable_url.is_empty() {
+                out.portable_url = url;
+                out.portable_sha256 = digest;
+            }
+        } else if name.ends_with(".exe") && !name.contains("port") && !name.contains("msi") {
+            if out.installer_url.is_empty() {
+                out.installer_url = url;
+                out.installer_sha256 = digest;
+            }
+        }
+    }
+    out
+}
+
+fn no_update(current: &str, release_url: &str, portable: bool) -> AppUpdateInfo {
+    AppUpdateInfo {
+        current_version: current.to_string(),
+        latest_version: current.to_string(),
+        update_available: false,
+        download_url: String::new(),
+        installer_url: String::new(),
+        installer_sha256: String::new(),
+        portable_url: String::new(),
+        portable_sha256: String::new(),
+        release_url: release_url.to_string(),
+        notes: String::new(),
+        portable,
+    }
 }
 
 /// True when semver-ish `a` is strictly newer than `b` (numeric part compare,
@@ -606,22 +666,15 @@ fn is_newer(a: &str, b: &str) -> bool {
 
 /// Check GitHub for a newer MahsaDesk release than the running build and
 /// resolve a direct installer download URL from the release assets.
-pub async fn check_app_update(current: &str) -> AppUpdateInfo {
+pub async fn check_app_update(current: &str, portable: bool) -> AppUpdateInfo {
     let current = current.trim().trim_start_matches('v').to_string();
     let release_url = format!("https://github.com/{}/releases/latest", APP_REPO);
     let url = format!("https://api.github.com/repos/{}/releases/latest", APP_REPO);
-    let fallback = AppUpdateInfo {
-        current_version: current.clone(),
-        latest_version: current.clone(),
-        update_available: false,
-        download_url: String::new(),
-        release_url: release_url.clone(),
-    };
-    let rel: serde_json::Value = match http().get(&url).send().await {
-        Ok(r) => match r.json().await {
-            Ok(v) => v,
-            Err(_) => return fallback,
-        },
+    let fallback = no_update(&current, &release_url, portable);
+    // GitHub is unreachable on a blocked network: the UI shows "up to date",
+    // not an error, and the manual check surfaces the detail.
+    let rel: serde_json::Value = match net::get_json(&url, Duration::from_secs(20)).await {
+        Ok(v) => v,
         Err(_) => return fallback,
     };
     let tag = rel
@@ -633,34 +686,21 @@ pub async fn check_app_update(current: &str) -> AppUpdateInfo {
     if tag.is_empty() {
         return fallback;
     }
-    // pick the NSIS installer first, then any windows .exe asset
-    let mut download_url = String::new();
-    if let Some(assets) = rel.get("assets").and_then(|a| a.as_array()) {
-        let pick = |pred: &dyn Fn(&str) -> bool| -> Option<String> {
-            assets
-                .iter()
-                .filter_map(|a| {
-                    let name = a.get("name").and_then(|n| n.as_str())?;
-                    let url = a.get("browser_download_url").and_then(|u| u.as_str())?;
-                    Some((name, url))
-                })
-                .find(|(n, _)| pred(n))
-                .map(|(_, u)| u.to_string())
-        };
-        download_url = pick(&|n| {
-            n.contains("setup") && n.ends_with(".exe")
-        })
-            .or_else(|| pick(&|n| n.contains("x64") && n.ends_with(".exe")))
-            .or_else(|| {
-                pick(&|n| {
-                    n.ends_with(".exe")
-                        && !n.contains("portable")
-                        && !n.contains("msi")
-                })
-            })
-            .unwrap_or_default();
-    }
-    let url_boxed = download_url.clone();
+    let assets = pick_release_assets(&rel);
+    // keep the old single-URL field meaningful: the installer when the release
+    // has one, otherwise the portable zip
+    let download_url = if !assets.installer_url.is_empty() {
+        assets.installer_url.clone()
+    } else {
+        assets.portable_url.clone()
+    };
+    let notes: String = rel
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(4000)
+        .collect();
     let release_page = rel
         .get("html_url")
         .and_then(|u| u.as_str())
@@ -669,8 +709,13 @@ pub async fn check_app_update(current: &str) -> AppUpdateInfo {
     AppUpdateInfo {
         update_available: is_newer(&tag, &current),
         latest_version: tag,
-        download_url: url_boxed,
+        download_url,
         release_url: release_page,
+        installer_url: assets.installer_url,
+        installer_sha256: assets.installer_sha256,
+        portable_url: assets.portable_url,
+        portable_sha256: assets.portable_sha256,
+        notes,
         ..fallback
     }
 }
@@ -750,5 +795,36 @@ mod tests {
         assert_eq!(repo, "GFW-knocker/Xray-core");
         assert_eq!(tag, None);
         assert_eq!(asset, "Xray-windows-64.zip");
+    }
+
+    #[test]
+    fn release_assets_are_split_into_installer_and_portable_zip() {
+        // the two assets the Windows release workflow uploads
+        let rel = serde_json::json!({
+            "assets": [
+                {
+                    "name": "MahsaDeskPort.win.zip",
+                    "browser_download_url": "https://github.com/x/y/releases/download/v1/zip",
+                    "digest": "sha256:AA11"
+                },
+                {
+                    "name": "MahsaDeskSetup_v1.2.3.exe",
+                    "browser_download_url": "https://github.com/x/y/releases/download/v1/setup",
+                    "digest": "sha256:bb22"
+                }
+            ]
+        });
+        let a = pick_release_assets(&rel);
+        assert_eq!(a.portable_url, "https://github.com/x/y/releases/download/v1/zip");
+        assert_eq!(a.portable_sha256, "aa11");
+        assert_eq!(a.installer_url, "https://github.com/x/y/releases/download/v1/setup");
+        assert_eq!(a.installer_sha256, "bb22");
+    }
+
+    #[test]
+    fn a_release_without_assets_offers_no_download() {
+        let a = pick_release_assets(&serde_json::json!({ "tag_name": "v1" }));
+        assert!(a.installer_url.is_empty());
+        assert!(a.portable_url.is_empty());
     }
 }

@@ -49,6 +49,8 @@ export interface Settings {
   allow_insecure: boolean;
   mux: boolean;
   ipv6: boolean;
+  /** optional proxy used only for downloads; empty = automatic */
+  download_proxy: string;
   remote_dns: string;
   routing_preset: string;
   custom_proxy: string;
@@ -164,6 +166,14 @@ export const api = {
   requirementsUpgrade: (key: string) =>
     invoke<ReqInfo>("requirements_upgrade", { key }),
   appUpdateCheck: () => invoke<AppUpdateInfo>("app_update_check"),
+  appUpdateDownload: (url: string, version: string, sha256: string | null) =>
+    invoke<string>("app_update_download", { url, version, sha256 }),
+  appUpdateInstall: (path: string, portable: boolean) =>
+    invoke<void>("app_update_install", { path, portable }),
+  onAppUpdateProgress: (cb: (downloaded: number, total: number | null) => void) =>
+    listen<{ downloaded: number; total: number | null }>("app-update-progress", (e) =>
+      cb(e.payload.downloaded, e.payload.total)
+    ),
 };
 
 export interface AppUpdateInfo {
@@ -171,7 +181,14 @@ export interface AppUpdateInfo {
   latest_version: string;
   update_available: boolean;
   download_url: string;
+  installer_url: string;
+  installer_sha256: string;
+  portable_url: string;
+  portable_sha256: string;
   release_url: string;
+  notes: string;
+  /** true when the running build is the portable exe */
+  portable: boolean;
 }
 
 export interface ReqInfo {
