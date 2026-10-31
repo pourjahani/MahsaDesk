@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder};
@@ -244,6 +245,33 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
             let _ = child.kill();
             return Err("Psiphon tunnel did not come up in time (see logs)".into());
         }
+        // The local proxies bind before the tunnel exists, so the port check
+        // above proves nothing: only real traffic says "established". This is
+        // the exact source of the old "connected but nothing happens".
+        core::push_log(
+            &logs,
+            app,
+            "[connect] psiphon local proxies are up; waiting for the tunnel...".into(),
+        );
+        let ms = match probe_egress(
+            Some(&format!("http://127.0.0.1:{}", settings.psiphon_http_port)),
+            Duration::from_secs(90),
+        ) {
+            Ok(ms) => ms,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Psiphon could not send traffic through the tunnel in 90 s: {}.\n\nSome networks take a couple of minutes - try again, or check the Logs page.",
+                    e
+                ));
+            }
+        };
+        core::push_log(
+            &logs,
+            app,
+            format!("[connect] psiphon tunnel established, first response in {} ms", ms),
+        );
         sysproxy::enable_system_proxy(settings.psiphon_http_port)?;
         let arc = state(&app.state::<ManagedState>());
         let mut g = arc.lock().unwrap();
@@ -341,6 +369,27 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
             let _ = child.wait();
             return Err(e);
         }
+        // Start-up traffic check (non-fatal: a slow exit can time it out
+        // while the mode works).
+        let check_port = gate_upstream.unwrap_or(settings.http_port);
+        match probe_egress(
+            Some(&format!("http://127.0.0.1:{}", check_port)),
+            Duration::from_secs(15),
+        ) {
+            Ok(ms) => core::push_log(
+                &logs,
+                app,
+                format!("[connect] system-proxy traffic verified, first response in {} ms", ms),
+            ),
+            Err(e) => core::push_log(
+                &logs,
+                app,
+                format!(
+                    "[connect] warning: the start-up traffic check failed ({}), the mode may not be delivering traffic - try another server",
+                    e
+                ),
+            ),
+        }
         let arc = state(&app.state::<ManagedState>());
         let mut g = arc.lock().unwrap();
         g.hy2_child = Some(child);
@@ -380,6 +429,29 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
                 &settings.per_app_mode,
                 &settings.per_app_list,
             )?;
+            // Start-up traffic check (non-fatal: a slow exit can time it out
+            // while the mode works). Probing the core's own upstream keeps
+            // the check meaningful even with per-app "allow" rules, which
+            // would politely send this app's own probe direct.
+            let check_port = gate_upstream.unwrap_or(settings.http_port);
+            match probe_egress(
+                Some(&format!("http://127.0.0.1:{}", check_port)),
+                Duration::from_secs(15),
+            ) {
+                Ok(ms) => core::push_log(
+                    &logs,
+                    app,
+                    format!("[connect] system-proxy traffic verified, first response in {} ms", ms),
+                ),
+                Err(e) => core::push_log(
+                    &logs,
+                    app,
+                    format!(
+                        "[connect] warning: the start-up traffic check failed ({}), the mode may not be delivering traffic - try another server",
+                        e
+                    ),
+                ),
+            }
         }
         Mode::PsiphonAfter => {
             // xray keeps running for the inner leg; psiphon sits on top of it
@@ -406,6 +478,26 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
                 }
                 return Err("Psiphon tunnel did not come up in time (see logs)".into());
             }
+            core::push_log(
+                &logs,
+                app,
+                "[connect] psiphon local proxies are up; waiting for the tunnel...".into(),
+            );
+            if let Err(e) = probe_egress(
+                Some(&format!("http://127.0.0.1:{}", settings.psiphon_http_port)),
+                Duration::from_secs(90),
+            ) {
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Some(h) = handle.take() {
+                    h.shutdown();
+                }
+                return Err(format!(
+                    "Psiphon could not send traffic through the tunnel in 90 s: {}.\n\nSome networks take a couple of minutes - try again, or check the Logs page.",
+                    e
+                ));
+            }
+            core::push_log(&logs, app, "[connect] psiphon tunnel established".into());
             sysproxy::enable_system_proxy(settings.psiphon_http_port)?;
             g.psiphon_child = Some(child);
         }
@@ -440,6 +532,81 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
                 }
                 let _ = disconnect(app);
                 return Err(e);
+            }
+            // A leftover Windows proxy from another VPN breaks browsers even
+            // when the TUN itself works, because their requests go to a dead
+            // proxy port instead of into the tunnel. TUN does not need the
+            // WinINET setting at all (traffic is captured at the driver
+            // level), so clear it while TUN is active. Previous state is
+            // reported so a user who relies on it knows what changed.
+            match sysproxy::save_snapshot() {
+                Some(sp) if sp.enable => core::push_log(
+                    &logs,
+                    app,
+                    format!(
+                        "[connect] TUN: the Windows proxy setting pointed at {}:{} (set by another app) - disabled while TUN runs",
+                        sp.host, sp.port
+                    ),
+                ),
+                _ => core::push_log(
+                    &logs,
+                    app,
+                    "[connect] TUN: no leftover system proxy".into(),
+                ),
+            }
+            let _ = sysproxy::disable_system_proxy();
+            core::push_log(
+                &logs,
+                app,
+                "[connect] TUN started; waiting for sing-box...".into(),
+            );
+            // The elevated sing-box is not our child, so "it is in the
+            // process table" is the observable we have. A stale one from a
+            // crashed session can also satisfy this - the traffic probe
+            // below is the authoritative check.
+            let mut alive = false;
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while std::time::Instant::now() < deadline {
+                if process_alive("sing-box.exe") {
+                    alive = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            if !alive {
+                if let Some(h) = handle.take() {
+                    h.shutdown();
+                }
+                let _ = disconnect(app);
+                let tail = tail_file(&dir.join("singbox-tun.log"), 8)
+                    .map(|t| format!("\nsing-box log tail:\n{}", t))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "TUN mode: sing-box did not stay running (the UAC prompt was declined, or startup failed).{}",
+                    tail
+                ));
+            }
+            match probe_egress(None, Duration::from_secs(30)) {
+                Ok(ms) => core::push_log(
+                    &logs,
+                    app,
+                    format!("[connect] TUN traffic verified, first response in {} ms", ms),
+                ),
+                Err(e) => {
+                    if let Some(h) = handle.take() {
+                        h.shutdown();
+                    }
+                    // best-effort elevated cleanup; taskkill without admin
+                    // normally cannot touch the elevated engine
+                    let mut tk = Command::new("taskkill");
+                    tk.args(["/IM", "sing-box.exe", "/F"]);
+                    let _ = proc::output(tk);
+                    let _ = disconnect(app);
+                    return Err(format!(
+                        "TUN is up but no traffic flows through it ({}).\n\nThat is the server profile failing to connect, or sing-box being blocked. Check the Logs page and data/singbox-tun.log.",
+                        e
+                    ));
+                }
             }
         }
     }
@@ -1183,6 +1350,102 @@ fn is_ip(s: &str) -> bool {
     s.parse::<std::net::IpAddr>().is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// Connect verification
+//
+// "Connected but nothing happens" was previously possible because a mode was
+// declared ACTIVE before anything could fail: tunnel-core binds its local
+// proxies before the tunnel exists, and the elevated sing-box cannot be
+// observed by the un-elevated app at all. Every mode now finishes with a real
+// HTTP probe through the exact path the user will use, without any response
+// status meaning anything special - completing an HTTP exchange once is the
+// whole proof that the path carries traffic.
+// ---------------------------------------------------------------------------
+
+/// Probe targets, plain HTTP so the check never depends on the TLS stack of
+/// the exit. Either answering is success.
+const PROBE_TARGETS: [&str; 2] = [
+    "http://www.gstatic.com/generate_204",
+    "http://cp.cloudflare.com/",
+];
+
+fn blocking_client(proxy_uri: Option<&str>) -> reqwest::blocking::Client {
+    let builder = reqwest::blocking::Client::builder()
+        .user_agent("MahsaDesk-connect-check")
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(12));
+    match proxy_uri {
+        Some(uri) => {
+            let proxy = reqwest::Proxy::all(uri)
+                .map_err(|e| e.to_string())
+                .unwrap_or_else(|e| panic!("invalid probe proxy {uri}: {}", e));
+            builder.proxy(proxy)
+        }
+        None => builder.no_proxy(),
+    }
+    .build()
+    .expect("probe client build")
+}
+
+/// Try `PROBE_TARGETS` through `proxy_uri` (None = the raw OS stack, which is
+/// what a TUN captures) until one completes a request or `budget` expires.
+pub fn probe_egress(
+    proxy_uri: Option<&str>,
+    budget: Duration,
+) -> Result<u32, String> {
+    let start = std::time::Instant::now();
+    // One client across the whole budget: per-try clients leak sockets.
+    let client = blocking_client(proxy_uri);
+    loop {
+        for target in PROBE_TARGETS {
+            match client.get(target).send() {
+                Ok(ret) => {
+                    // Any completed exchange counts: even a 403 proves the
+                    // transport works end-to-end.
+                    let _ = ret;
+                    return Ok(start.elapsed().as_millis() as u32);
+                }
+                Err(e) => {
+                    if start.elapsed() >= budget {
+                        return Err(format!(
+                            "{} (after {:.0}s)",
+                            e,
+                            start.elapsed().as_secs_f64()
+                        ));
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2_000));
+    }
+}
+
+/// Name in the process table - the only observable the un-elevated app has
+/// for the UAC-elevated sing-box.
+fn process_alive(name: &str) -> bool {
+    let mut cmd = Command::new("tasklist");
+    cmd.args(["/FI", &format!("IMAGENAME eq {}", name), "/FO", "CSV", "/NH"]);
+    match proc::output(cmd) {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).contains(name),
+        Err(_) => false,
+    }
+}
+
+fn tail_file(path: &std::path::Path, lines: usize) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(
+        text.lines()
+            .rev()
+            .take(lines)
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 #[tauri::command]
 fn connect(app: AppHandle, mode: String) -> Result<(), String> {
     let mode = match mode.as_str() {
@@ -1330,7 +1593,7 @@ fn import_config(app: AppHandle, st: State<ManagedState>, json_text: String) -> 
 #[tauri::command]
 async fn download_geo(app: AppHandle) -> Result<(), String> {
     let dir = data_dir(&app)?;
-    match requirements::upgrade(&dir, "geo").await {
+    match requirements::upgrade(&dir, "geo", Some(&app)).await {
         Ok(_) => Ok(()),
         Err(download_error) => {
             // Portable releases already include a known-good geoip/geosite
@@ -1580,7 +1843,7 @@ async fn requirements_upgrade(app: AppHandle, key: String) -> Result<requirement
         return Err("disconnect MahsaDesk before updating engine files".into());
     }
     let dir = binaries_dir(&app)?;
-    requirements::upgrade(&dir, &key).await
+    requirements::upgrade(&dir, &key, Some(&app)).await
 }
 
 #[tauri::command]

@@ -105,11 +105,29 @@ fn ps_quote(s: &str) -> String {
 }
 
 /// Write the sing-box config and start it elevated (UAC prompt). Best-effort.
+/// The config is extended with a file log first, so failures that happen
+/// inside the elevated process (which the app cannot see as its child) leave
+/// `singbox-tun.log` next to the data dir for the verdict.
 pub fn start_tun_elevated(config: &Value, singbox_path: &PathBuf, workdir: &PathBuf) -> Result<(), String> {
-    let cfg = config;
+    let mut cfg = config.clone();
+    let log_path = workdir.join("singbox-tun.log");
+    if let Some(obj) = cfg.as_object_mut() {
+        let mut log_section = obj
+            .get("log")
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        log_section.insert(
+            "output".into(),
+            Value::String(log_path.to_string_lossy().into_owned()),
+        );
+        log_section.insert("timestamp".into(), Value::Bool(true));
+        obj.insert("log".into(), Value::Object(log_section));
+    }
     let cfg_path = workdir.join("singbox-tun.json");
     let json_text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&cfg_path, json_text).map_err(|e| format!("config write: {}", e))?;
+    // stale log from a previous run must not be mistaken for this one
+    let _ = std::fs::remove_file(&log_path);
 
     // Arguments travel as ONE string so paths with spaces stay intact;
     // Windows paths cannot contain '"', so embedding them in double quotes

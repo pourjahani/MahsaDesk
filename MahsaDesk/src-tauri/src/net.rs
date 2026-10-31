@@ -225,6 +225,34 @@ pub async fn get_bytes(url: &str, timeout: Duration) -> Result<Vec<u8>, String> 
         .map_err(|e| format!("download of {} was interrupted: {}", url, describe(&e)))
 }
 
+/// Whole body as bytes, reporting `(downloaded, total)` while streaming so the
+/// UI can show a fill bar for the multi-MB engine and geo files.
+pub async fn get_bytes_progress(
+    url: &str,
+    timeout: Duration,
+    progress: &(dyn Fn(u64, Option<u64>) + Sync),
+) -> Result<Vec<u8>, String> {
+    let mut resp = get_response(url, timeout).await?;
+    let total = resp.content_length();
+    let mut buf: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut reported: u64 = 0;
+    progress(0, total);
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("download of {} was interrupted: {}", url, describe(&e)))?
+    {
+        buf.extend_from_slice(&chunk);
+        // one UI event per 256 KB keeps the webview responsive
+        if buf.len() as u64 - reported >= 256 * 1024 {
+            reported = buf.len() as u64;
+            progress(reported, total);
+        }
+    }
+    progress(buf.len() as u64, total);
+    Ok(buf)
+}
+
 /// Whole body as text, refusing anything over `max_bytes` so a hostile or
 /// broken endpoint cannot exhaust memory.
 pub async fn get_text(url: &str, timeout: Duration, max_bytes: usize) -> Result<String, String> {

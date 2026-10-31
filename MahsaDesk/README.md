@@ -49,6 +49,14 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.12
+
+- **Download fill bar** - core upgrades, geo files and wintun now stream with live progress (a fill bar appears at the bottom of the window; the app's own update download already showed a percentage on its button)
+- **"Connected" is now verified** - every mode finishes with a real HTTP check through the exact path you use, so "connected but nothing happens" is no longer silently reported
+  - **TUN**: the elevated sing-box is now observed after launch (UAC declined / instant crash becomes an error), its config keeps a `data/singbox-tun.log`, and a leftover Windows proxy from another app is cleared while TUN runs
+  - **Psiphon**: the local proxies bind before the tunnel exists - the app now waits for real tunnel establishment (up to 90 s) before switching on the system proxy, and reports the old behaviour as an error with a retry hint
+  - **System proxy / hy2**: a start-up traffic check runs after arming and logs the verdict
+
 ### New in v0.3.10
 
 - **Windows proxy-aware downloads** - geo-file and subscription requests now use the Windows system proxy settings, which fixes download failures on PCs that require a proxy; geo files also download through the verified asset path and can fall back to the copies bundled with the portable app

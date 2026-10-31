@@ -208,6 +208,14 @@ export const DICT = {
       checking: "Checking...",
       installFailed: "Update failed",
     },
+    dl: {
+      coreXray: "Downloading Xray core...",
+      coreSingbox: "Downloading sing-box core...",
+      corePsiphon: "Downloading Psiphon engine...",
+      wintun: "Downloading wintun driver...",
+      geoip: "Downloading geoip.dat...",
+      geosite: "Downloading geosite.dat...",
+    },
     psiphon: {
       title: "Psiphon",
       note: "Runs the Psiphon tunnel engine the same way MahsaNG's Android Psiphon modes do. Place psiphon-tunnel-core.exe next to xray.exe in the app binaries folder.",
@@ -623,6 +631,14 @@ export const DICT = {
       check: "بررسی به‌روزرسانی",
       checking: "در حال بررسی...",
       installFailed: "به‌روزرسانی ناموفق بود",
+    },
+    dl: {
+      coreXray: "در حال دانلود هسته Xray...",
+      coreSingbox: "در حال دانلود هسته sing-box...",
+      corePsiphon: "در حال دانلود موتور Psiphon...",
+      wintun: "در حال دانلود درایور wintun...",
+      geoip: "در حال دانلود geoip.dat...",
+      geosite: "در حال دانلود geosite.dat...",
     },
     psiphon: {
       title: "سایفون",

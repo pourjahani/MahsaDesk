@@ -1,6 +1,6 @@
 [package]
 name = "mahsadesk"
-version = "0.3.11"
+version = "0.3.12"
 description = "MahsaDesk - free v2ray/xray client for Windows"
 authors = ["MahsaDesk"]
 edition = "2021"

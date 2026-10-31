@@ -6,6 +6,7 @@
 
 use crate::net;
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -372,11 +373,21 @@ pub async fn github_asset_digest(
 
 /// Download `url`; when the publisher exposes an expected sha256, refuse
 /// anything that doesn't match it. Returns the raw bytes either way.
-pub async fn fetch_verified(url: &str, expected_sha256: Option<&str>) -> Result<Vec<u8>, String> {
+///
+/// `progress` receives `(downloaded, total)` while streaming so the UI can
+/// show a fill bar for the multi-MB engine and geo files.
+pub async fn fetch_verified(
+    url: &str,
+    expected_sha256: Option<&str>,
+    progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
+) -> Result<Vec<u8>, String> {
     // net:: walks every transport (own tunnel, system proxy, direct) and, when
     // none of them works, reports each route's real cause instead of reqwest's
     // bare "error sending request for url (...)".
-    let bytes = net::get_bytes(url, Duration::from_secs(300)).await?;
+    let bytes = match progress {
+        Some(cb) => net::get_bytes_progress(url, Duration::from_secs(300), cb).await?,
+        None => net::get_bytes(url, Duration::from_secs(300)).await?,
+    };
     let actual = sha256_bytes(&bytes);
     if let Some(expected) = expected_sha256 {
         if !expected.eq_ignore_ascii_case(&actual) {
@@ -433,13 +444,37 @@ fn source_for(key: &str) -> Result<Option<ZipFetch>, String> {
 /// Download and install one requirement into `dir`. Geo data goes through the
 /// existing geo downloader; the Psiphon engine is a raw exe download plus a
 /// sha marker so future upgrades can detect changes.
-pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
+///
+/// When `app` is given, streaming progress is emitted as `download-progress`
+/// events (`{ key, label, downloaded, total }`) so the UI can show a fill bar.
+pub async fn upgrade(dir: &PathBuf, key: &str, app: Option<&AppHandle>) -> Result<ReqInfo, String> {
+    // Per-asset label so the UI can say which file is moving ("geo" downloads
+    // two files in one call).
+    fn progress_callback(
+        app: Option<&AppHandle>,
+        label: String,
+    ) -> Option<std::sync::Arc<dyn Fn(u64, Option<u64>) + Sync + Send>> {
+        let app = app?;
+        let emitter = (app.clone(), label);
+        Some(std::sync::Arc::new(move |done: u64, total: Option<u64>| {
+            let _ = emitter.0.emit(
+                "download-progress",
+                serde_json::json!({
+                    "key": emitter.1,
+                    "downloaded": done,
+                    "total": total,
+                }),
+            );
+        }))
+    }
+
     match key {
         // Psiphon publishes the git blob sha of the rolling engine binary:
         // downloaded bytes must hash to exactly that before we keep them.
         "psiphon" => {
             let dst = dir.join(crate::psiphon::EXE_NAME);
-            let bytes = fetch_verified(PSIPHON_BASE_URL, None).await?;
+            let cb = progress_callback(app, crate::psiphon::EXE_NAME.to_string());
+            let bytes = fetch_verified(PSIPHON_BASE_URL, None, cb.as_deref()).await?;
             let local_sha = git_blob_sha1(&bytes);
             if let Some(remote) = psiphon_engine_sha().await {
                 if remote.trim() != local_sha {
@@ -466,7 +501,8 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
             ] {
                 let expected =
                     github_asset_digest("Loyalsoldier/v2ray-rules-dat", None, fname).await;
-                let bytes = fetch_verified(url, expected.as_deref()).await?;
+                let cb = progress_callback(app, fname.to_string());
+                let bytes = fetch_verified(url, expected.as_deref(), cb.as_deref()).await?;
                 let dst = dir.join(fname);
                 let tmp = dir.join(format!("{}.download", fname));
                 std::fs::write(&tmp, &bytes)
@@ -487,7 +523,8 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
         "wintun" => {
             // Raw file, not an archive member - pin it by git blob sha so a
             // swapped-in DLL can never reach the binaries folder.
-            let bytes = fetch_verified(WINTUN_URL, None).await?;
+            let cb = progress_callback(app, "wintun.dll".to_string());
+            let bytes = fetch_verified(WINTUN_URL, None, cb.as_deref()).await?;
             let local = git_blob_sha1(&bytes);
             if local != WINTUN_BLOB_SHA {
                 return Err(format!(
@@ -511,7 +548,8 @@ pub async fn upgrade(dir: &PathBuf, key: &str) -> Result<ReqInfo, String> {
                 }
                 None => None,
             };
-            let bytes = fetch_verified(&zip_url, expected.as_deref()).await?;
+            let cb = progress_callback(app, zip_member.clone());
+            let bytes = fetch_verified(&zip_url, expected.as_deref(), cb.as_deref()).await?;
             let tmp = std::env::temp_dir().join(format!("mahsareq-{}-{}.zip", other, std::process::id()));
             std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
             let dst = dir.join(zip_member.as_str());

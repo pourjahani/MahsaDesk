@@ -174,6 +174,13 @@ export const api = {
     listen<{ downloaded: number; total: number | null }>("app-update-progress", (e) =>
       cb(e.payload.downloaded, e.payload.total)
     ),
+  onDownloadProgress: (
+    cb: (key: string, downloaded: number, total: number | null) => void
+  ) =>
+    listen<{ key: string; downloaded: number; total: number | null }>(
+      "download-progress",
+      (e) => cb(e.payload.key, e.payload.downloaded, e.payload.total)
+    ),
 };
 
 export interface AppUpdateInfo {

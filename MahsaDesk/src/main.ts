@@ -188,6 +188,81 @@ function applyLang(l: Lang) {
 }
 
 // ---------------------------------------------------------------------------
+// global download fill bar (engines, geo files, wintun)
+//
+// The backend streams every multi-MB download and emits `download-progress`
+// events; this bar is the one place in the UI that answers "is it actually
+// moving?". It lives on <body>, outside the re-rendered shell, so it survives
+// view switches and language switches.
+// ---------------------------------------------------------------------------
+
+let dlBarEl: HTMLElement | null = null;
+let dlFillEl: HTMLElement | null = null;
+let dlLabelEl: HTMLElement | null = null;
+let dlHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Backend event key -> i18n label for the friendly name. */
+const dlKeyLabels: Record<string, string> = {
+  "xray.exe": "dl.coreXray",
+  "sing-box.exe": "dl.coreSingbox",
+  "psiphon-tunnel-core.exe": "dl.corePsiphon",
+  "wintun.dll": "dl.wintun",
+  "geoip.dat": "dl.geoip",
+  "geosite.dat": "dl.geosite",
+};
+
+function ensureDlBar(): { bar: HTMLElement; fill: HTMLElement; label: HTMLElement } {
+  if (!dlBarEl || !dlFillEl || !dlLabelEl) {
+    const bar = el("div", "dl-bar hidden");
+    const label = el("span", "dl-label", "");
+    const track = el("div", "dl-track");
+    const fill = el("div", "dl-fill");
+    track.append(fill);
+    bar.append(label, track);
+    document.body.append(bar);
+    dlBarEl = bar;
+    dlFillEl = fill;
+    dlLabelEl = label;
+  }
+  return { bar: dlBarEl, fill: dlFillEl, label: dlLabelEl } as {
+    bar: HTMLElement;
+    fill: HTMLElement;
+    label: HTMLElement;
+  };
+}
+
+function showDlProgress(key: string, done: number | null, total: number | null) {
+  const { bar, fill, label } = ensureDlBar();
+  if (dlHideTimer) {
+    clearTimeout(dlHideTimer);
+    dlHideTimer = null;
+  }
+  const labelKey = dlKeyLabels[key];
+  label.textContent = labelKey ? t(labelKey) : key;
+  const pct =
+    total && total > 0 && done != null
+      ? Math.min(100, Math.round((done / total) * 100))
+      : null;
+  if (pct == null) {
+    fill.classList.add("indeterminate");
+  } else {
+    fill.classList.remove("indeterminate");
+    fill.style.width = `${Math.max(3, pct)}%`;
+  }
+  bar.classList.remove("hidden");
+}
+
+/** Let the bar settle (the caller awaits the command right after) and hide. */
+function finishDlProgress() {
+  if (!dlBarEl) return;
+  if (dlHideTimer) clearTimeout(dlHideTimer);
+  dlHideTimer = setTimeout(() => {
+    dlBarEl?.classList.add("hidden");
+    dlHideTimer = null;
+  }, 900);
+}
+
+// ---------------------------------------------------------------------------
 // new-release banner (startup check, requirements-card pattern)
 // ---------------------------------------------------------------------------
 
@@ -1397,6 +1472,7 @@ function renderRouting() {
     btnGeo.textContent = "...";
     try {
       await api.downloadGeo();
+      finishDlProgress();
     } catch (e: any) {
       alert(`${t("error")}: ${e}`);
     }
@@ -1480,6 +1556,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
         btn.textContent = t("requirements.updating");
         try {
           await api.requirementsUpgrade(it.key);
+          finishDlProgress();
           paint(await api.requirementsStatus(false));
         } catch (e: any) {
           alert(`${t("error")}: ${e}`);
@@ -1527,6 +1604,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
         for (const it of todo) {
           try {
             await api.requirementsUpgrade(it.key);
+            finishDlProgress();
           } catch (e: any) {
             failed.push(`${it.key}: ${e}`);
           }
@@ -1716,6 +1794,7 @@ function renderAssets() {
       btnDl.textContent = "...";
       try {
         await api.downloadGeo();
+        finishDlProgress();
       } catch (e: any) {
         alert(`${t("error")}: ${e}`);
       }
@@ -2794,6 +2873,7 @@ function firstRunWizard() {
       btn.textContent = t("wizard.geoBusy");
       try {
         await api.downloadGeo();
+        finishDlProgress();
         geoDone = true;
         btn.textContent = t("wizard.geoDone");
       } catch (e: any) {
@@ -2972,6 +3052,10 @@ async function init() {
   renderView();
   updateStatus();
   listenTraffic();
+  api.onDownloadProgress((key, done, total) => {
+    showDlProgress(key, done, total);
+    if (total && done >= total) finishDlProgress();
+  });
   // release check after first paint so it never delays startup
   setTimeout(checkAppUpdateOnBoot, 1500);
   // #24: first-run wizard after first paint
