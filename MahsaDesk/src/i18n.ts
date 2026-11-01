@@ -15,7 +15,6 @@ export const DICT = {
       settings: "Settings",
       logs: "Logs",
       about: "About",
-      connection: "Connection",
     },
     status: {
       connected: "Connected",
@@ -348,20 +347,7 @@ export const DICT = {
       crash: "crash",
       noMatches: "No matching lines.",
     },
-    doctor: {
-      title: "Connection doctor",
-      run: "Run checks",
-      running: "Checking…",
-      hint: "Runs right after you connect; you can rerun anytime.",
-      check: {
-        engine: "Core process is running",
-        socks: "SOCKS proxy port answers",
-        http: "HTTP proxy port answers",
-        tunnel: "Tunnel forwards traffic",
-        ip: "Exit IP changed",
-        dns: "DNS resolves through the tunnel",
-      },
-    },
+    doctor: {},
     isp: {
       title: "Anti-filtering per ISP",
       note:
@@ -417,10 +403,7 @@ export const DICT = {
       version: "Version",
       announcement: "Announcement",
     },
-    connection: {
-      title: "Connection",
-      connect: "Connect",
-    },
+    connection: {},
     error: "Error",
     saved: "Saved",
     connectErr: "Connection failed",
@@ -439,7 +422,6 @@ export const DICT = {
       settings: "تنظیمات",
       logs: "گزارش‌ها",
       about: "درباره",
-      connection: "اتصال",
     },
     status: {
       connected: "متصل",
@@ -771,20 +753,7 @@ export const DICT = {
       crash: "کرش",
       noMatches: "خطی یافت نشد.",
     },
-    doctor: {
-      title: "دکتر اتصال",
-      run: "اجرای بررسی‌ها",
-      running: "در حال بررسی…",
-      hint: "بلافاصله بعد از اتصال اجرا می‌شود؛ هر وقت خواستی دوباره اجرا کن.",
-      check: {
-        engine: "پروسه هسته در حال اجراست",
-        socks: "پورت پراکسی SOCKS پاسخ می‌دهد",
-        http: "پورت پراکسی HTTP پاسخ می‌دهد",
-        tunnel: "تونل ترافیک را منتقل می‌کند",
-        ip: "IP خروجی عوض شده",
-        dns: "DNS از مسیر تونل resolve می‌شود",
-      },
-    },
+    doctor: {},
     isp: {
       title: "ضد فیلترینگ به تفکیک اپراتور",
       note:

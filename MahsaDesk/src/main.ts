@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo, type DoctorCheck, type ShareInfo } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo, type ShareInfo } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,6 @@ const NAV = [
   { id: "settings", icon: "settings", label: "nav.settings" },
   { id: "logs", icon: "logs", label: "nav.logs" },
   { id: "about", icon: "about", label: "nav.about" },
-  { id: "connection", icon: "power", label: "nav.connection" },
 ];
 
 function buildLayout() {
@@ -356,7 +355,6 @@ function renderView() {
     case "settings": renderSettings(); break;
     case "logs": renderLogs(); break;
     case "about": renderAbout(); break;
-    case "connection": renderConnect(); break;
   }
 }
 
@@ -1940,159 +1938,6 @@ function renderPsiphon() {
   mainEl.append(wrap);
 }
 
-// ---------------------------------------------------------------------------
-// connection view (separate tab: connect button + method options)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// connection doctor (#21)
-// ---------------------------------------------------------------------------
-
-let doctorResults: DoctorCheck[] | null = null;
-let doctorBusy = false;
-
-async function runDoctor(rerender: boolean) {
-  doctorBusy = true;
-  doctorResults = null;
-  if (rerender && currentView === "connection") renderView();
-  try {
-    doctorResults = await api.connectionDoctor();
-  } catch (e: any) {
-    doctorResults = [{ id: "engine", ok: false, detail: String(e) }];
-  } finally {
-    doctorBusy = false;
-    if (rerender && currentView === "connection") renderView();
-  }
-}
-
-function doctorCard(): HTMLElement {
-  const card = el("div", "card");
-  card.append(el("h2", "", t("doctor.title")));
-  const row = el("div", "actions");
-  const btn = el("button", "btn primary", doctorBusy ? t("doctor.running") : t("doctor.run"));
-  btn.disabled = doctorBusy;
-  btn.onclick = () => runDoctor(true);
-  row.append(btn);
-  card.append(row);
-
-  const list = el("div", "lines");
-  if (doctorBusy) {
-    list.append(el("p", "muted", t("doctor.running")));
-  } else if (!doctorResults) {
-    list.append(el("p", "muted", t("doctor.hint")));
-  } else {
-    for (const c of doctorResults) {
-      const r = el("div", "switch-row");
-      r.append(
-        el("span", "", t(`doctor.check.${c.id}`)),
-        el("span", "mono doctor-detail", c.detail),
-        el("span", `badge ${c.ok ? "ok" : "fail"}`, c.ok ? "✓" : "✕")
-      );
-      list.append(r);
-    }
-  }
-  card.append(list);
-  return card;
-}
-
-function renderConnect() {
-  const wrap = el("div", "view");
-  const head = el("div", "view-head");
-  head.append(el("h1", "", t("connection.title")));
-  wrap.append(head);
-
-  if (!settings) return;
-
-  // connect status row (reflects the live runtime state, not stale settings)
-  const statusRow = el("div", "conn-row");
-  const statusDot = el("span", "dot off");
-  const statusLabel = el("span", "status-label", t("status.disconnected"));
-  statusRow.append(statusDot, statusLabel);
-  wrap.append(statusRow);
-  const modeLabel: Record<string, string> = {
-    system: "status.systemMode",
-    tun: "status.tunMode",
-    "psiphon-only": "status.psiphonOnly",
-    "psiphon-after": "status.psiphonAfter",
-  };
-
-  // method selection grid
-  const grid = el("div", "bento");
-  const sysBox = el("div", "bento-box");
-  sysBox.append(
-    el("h3", "", t("settings.systemMode")),
-    el("p", "muted", t("settings.systemModeDesc")),
-    el("button", "btn primary", t("connection.connect"))
-  );
-  const btnSystem = sysBox.querySelector("button.btn.primary");
-  btnSystem.onclick = async () => {
-    await doConnect("system");
-    updateStatus();
-    renderView();
-  };
-
-  const tunBox = el("div", "bento-box");
-  tunBox.append(
-    el("h3", "", t("settings.tunMode")),
-    el("p", "muted", t("settings.tunModeDesc")),
-    el("button", "btn", t("connection.connect"))
-  );
-  const btnTun = tunBox.querySelector("button.btn");
-  btnTun.onclick = async () => {
-    await doConnect("tun");
-    updateStatus();
-    renderView();
-  };
-
-  const psiphonBox = el("div", "bento-box");
-  psiphonBox.append(
-    el("h3", "", t("status.psiphonOnly")),
-    el("p", "muted", t("psiphon.onlyDesc")),
-    el("button", "btn", t("connection.connect"))
-  );
-  const btnPsiphonOnly = psiphonBox.querySelector("button.btn");
-  btnPsiphonOnly.onclick = async () => {
-    await doConnect("psiphon-only");
-    updateStatus();
-    renderView();
-  };
-
-  const psiphonAfterBox = el("div", "bento-box");
-  psiphonAfterBox.append(
-    el("h3", "", t("status.psiphonAfter")),
-    el("p", "muted", t("psiphon.afterDesc")),
-    el("button", "btn", t("connection.connect"))
-  );
-  const btnPsiphonAfter = psiphonAfterBox.querySelector("button.btn");
-  btnPsiphonAfter.onclick = async () => {
-    await doConnect("psiphon-after");
-    updateStatus();
-    renderView();
-  };
-  grid.append(sysBox, tunBox, psiphonBox, psiphonAfterBox);
-  wrap.append(grid);
-
-  // highlight the box matching the live connection state
-  const boxes: [HTMLElement, string][] = [
-    [sysBox, "system"],
-    [tunBox, "tun"],
-    [psiphonBox, "psiphon-only"],
-    [psiphonAfterBox, "psiphon-after"],
-  ];
-  api.status().then((st) => {
-    statusDot.className = `dot ${st.running ? "on" : "off"}`;
-    statusLabel.textContent = st.running
-      ? t(modeLabel[st.mode ?? ""] ?? "status.connected")
-      : t("status.disconnected");
-    for (const [box, mode] of boxes) {
-      box.classList.toggle("selected", st.running && st.mode === mode);
-    }
-  });
-
-  // #21: connection doctor checklist
-  wrap.append(doctorCard());
-}
-
   // ---------------------------------------------------------------------------
   // tools view (DNS scanner / IP scanner / network tools)
   // ---------------------------------------------------------------------------
@@ -2963,8 +2808,6 @@ async function doConnect(mode: string) {
   }
   await refreshData();
   updateStatus();
-  // #21: verify the full chain right after a connect attempt
-  runDoctor(true);
 }
 
 async function doDisconnect() {
@@ -3021,7 +2864,7 @@ function listenTraffic() {
         /* state may already be gone */
       }
       updateStatus();
-      if (currentView === "logs" || currentView === "connection") renderView();
+      if (currentView === "logs") renderView();
     });
   } catch { /* not on tauri bridge during dev */ }
 }

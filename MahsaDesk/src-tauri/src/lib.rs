@@ -1263,30 +1263,41 @@ struct DelayResult {
 }
 
 #[tauri::command]
-fn test_delay(st: State<ManagedState>, id: String) -> Option<u32> {
+async fn test_delay(
+    st: State<'_, ManagedState>,
+    id: String,
+) -> Result<Option<u32>, String> {
+    let arc = state(&st);
     let target = {
-        let arc = state(&st);
         let g = arc.lock().unwrap();
         g.servers
             .iter()
             .find(|p| p.id == id)
-            .map(|p| (p.address.clone(), p.port))?
+            .map(|p| (p.address.clone(), p.port))
     };
-    let delay = tcp_ping(&target.0, target.1);
-    let arc = state(&st);
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    // A TCP ping can burn the full 4 s timeout: keep it off the UI thread.
+    let delay = tauri::async_runtime::spawn_blocking(move || tcp_ping(&target.0, target.1))
+        .await
+        .unwrap_or(None);
     let mut g = arc.lock().unwrap();
     for p in g.servers.iter_mut() {
         if p.id == id {
             p.delay = delay;
         }
     }
-    delay
+    Ok(delay)
 }
 
 #[tauri::command]
-fn test_all_delays(st: State<ManagedState>, ids: Option<Vec<String>>) -> Vec<DelayResult> {
+async fn test_all_delays(
+    st: State<'_, ManagedState>,
+    ids: Option<Vec<String>>,
+) -> Result<Vec<DelayResult>, String> {
+    let arc = state(&st);
     let targets: Vec<(String, String, u16)> = {
-        let arc = state(&st);
         let g = arc.lock().unwrap();
         g.servers
             .iter()
@@ -1295,37 +1306,43 @@ fn test_all_delays(st: State<ManagedState>, ids: Option<Vec<String>>) -> Vec<Del
             .collect()
     };
     // parallel batches of 16 (was fully sequential) and no state lock held
-    // while pings are in flight, so the UI keeps responding during the sweep
-    let mut results: Vec<DelayResult> = Vec::with_capacity(targets.len());
-    for chunk in targets.chunks(16) {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|(id, addr, port)| {
-                    let id = id.clone();
-                    let addr = addr.clone();
-                    let port = *port;
-                    s.spawn(move || DelayResult {
-                        id,
-                        delay: tcp_ping(&addr, port),
+    // while pings are in flight, so the UI keeps responding during the sweep.
+    // Runs on a blocking thread - a multi-second sweep inside a sync command
+    // blocks the IPC thread and makes the whole window "not responding".
+    let results: Vec<DelayResult> = tauri::async_runtime::spawn_blocking(move || {
+        let mut results: Vec<DelayResult> = Vec::with_capacity(targets.len());
+        for chunk in targets.chunks(16) {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(id, addr, port)| {
+                        let id = id.clone();
+                        let addr = addr.clone();
+                        let port = *port;
+                        s.spawn(move || DelayResult {
+                            id,
+                            delay: tcp_ping(&addr, port),
+                        })
                     })
-                })
-                .collect();
-            for h in handles {
-                if let Ok(r) = h.join() {
-                    results.push(r);
+                    .collect();
+                for h in handles {
+                    if let Ok(r) = h.join() {
+                        results.push(r);
+                    }
                 }
-            }
-        });
-    }
-    let arc = state(&st);
+            });
+        }
+        results
+    })
+    .await
+    .unwrap_or_default();
     let mut g = arc.lock().unwrap();
     for r in &results {
         if let Some(p) = g.servers.iter_mut().find(|p| p.id == r.id) {
             p.delay = r.delay;
         }
     }
-    results
+    Ok(results)
 }
 
 fn tcp_ping(address: &str, port: u16) -> Option<u32> {
@@ -1447,23 +1464,37 @@ fn tail_file(path: &std::path::Path, lines: usize) -> Option<String> {
 }
 
 #[tauri::command]
-fn connect(app: AppHandle, mode: String) -> Result<(), String> {
-    let mode = match mode.as_str() {
-        "tun" => Mode::Tun,
-        "psiphon-only" => Mode::PsiphonOnly,
-        "psiphon-after" => Mode::PsiphonAfter,
-        _ => Mode::SystemProxy,
-    };
-    connect_mode(&app, mode)?;
-    refresh_download_proxies(&app);
-    Ok(())
+async fn connect(app: AppHandle, mode: String) -> Result<(), String> {
+    // connect_mode blocks for up to ~90 s on the egress probe (by design: a
+    // mode is only "connected" once a real request completes). A sync command
+    // runs that on the main thread and freezes the whole window ("not
+    // responding" on every connect/disconnect/mode switch), so the blocking
+    // body runs on a dedicated thread instead.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = match mode.as_str() {
+            "tun" => Mode::Tun,
+            "psiphon-only" => Mode::PsiphonOnly,
+            "psiphon-after" => Mode::PsiphonAfter,
+            _ => Mode::SystemProxy,
+        };
+        connect_mode(&app, mode)?;
+        refresh_download_proxies(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn disconnect_cmd(app: AppHandle) -> Result<(), String> {
-    let _ = disconnect(&app);
-    refresh_download_proxies(&app);
-    Ok(())
+async fn disconnect_cmd(app: AppHandle) -> Result<(), String> {
+    // same: disconnect runs taskkill and waits on child processes
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = disconnect(&app);
+        refresh_download_proxies(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1672,7 +1703,11 @@ fn locate_xray(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn run_real_test(app: AppHandle, st: State<ManagedState>, id: String) -> Result<Option<u32>, String> {
+async fn run_real_test(
+    app: AppHandle,
+    st: State<'_, ManagedState>,
+    id: String,
+) -> Result<Option<u32>, String> {
     let xray = locate_xray(&app)?;
     let arc = state(&st);
     let (settings, server) = {
@@ -1688,7 +1723,12 @@ fn run_real_test(app: AppHandle, st: State<ManagedState>, id: String) -> Result<
     if server.protocol == "hysteria2" {
         return Err("hysteria2 real-test runs in the TUN engine; use TCP ping for it".into());
     }
-    let delay = core::real_url_test(&xray, &settings, &server, 0).ok();
+    // a real URL test launches a throwaway core and can take several seconds
+    let delay = tauri::async_runtime::spawn_blocking(move || {
+        core::real_url_test(&xray, &settings, &server, 0).ok()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let mut g = arc.lock().unwrap();
     for p in g.servers.iter_mut() {
         if p.id == id {
@@ -1699,14 +1739,14 @@ fn run_real_test(app: AppHandle, st: State<ManagedState>, id: String) -> Result<
 }
 
 #[tauri::command]
-fn test_all_real(
+async fn test_all_real(
     app: AppHandle,
-    st: State<ManagedState>,
+    st: State<'_, ManagedState>,
     ids: Option<Vec<String>>,
-) -> Vec<DelayResult> {
+) -> Result<Vec<DelayResult>, String> {
     let xray = match locate_xray(&app) {
         Ok(p) => p,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
     let arc = state(&st);
     let (settings, targets) = {
@@ -1721,27 +1761,33 @@ fn test_all_real(
                 .collect::<Vec<_>>(),
         )
     };
-    // batches of 8 concurrent throwaway cores
-    let mut results = Vec::new();
-    for chunk in targets.chunks(8) {
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for (i, (id, server)) in chunk.iter().enumerate() {
-                let x = xray.clone();
-                let st2 = settings.clone();
-                let (id, server) = (id.clone(), clone_profile(server));
-                handles.push(s.spawn(move || {
-                    let delay = core::real_url_test(&x, &st2, &server, i).ok();
-                    (id, delay)
-                }));
-            }
-            for h in handles {
-                if let Ok((id, delay)) = h.join() {
-                    results.push(DelayResult { id, delay });
+    // batches of 8 concurrent throwaway cores, on a blocking thread (same
+    // freeze hazard as every other long IPC body)
+    let results: Vec<DelayResult> = tauri::async_runtime::spawn_blocking(move || {
+        let mut results = Vec::new();
+        for chunk in targets.chunks(8) {
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                for (i, (id, server)) in chunk.iter().enumerate() {
+                    let x = xray.clone();
+                    let st2 = settings.clone();
+                    let (id, server) = (id.clone(), clone_profile(server));
+                    handles.push(s.spawn(move || {
+                        let delay = core::real_url_test(&x, &st2, &server, i).ok();
+                        (id, delay)
+                    }));
                 }
-            }
-        });
-    }
+                for h in handles {
+                    if let Ok((id, delay)) = h.join() {
+                        results.push(DelayResult { id, delay });
+                    }
+                }
+            });
+        }
+        results
+    })
+    .await
+    .unwrap_or_default();
     let mut g = arc.lock().unwrap();
     for r in &results {
         for p in g.servers.iter_mut() {
@@ -1750,11 +1796,14 @@ fn test_all_real(
             }
         }
     }
-    results
+    Ok(results)
 }
 
 #[tauri::command]
-fn validate_servers_config(app: AppHandle, st: State<ManagedState>) -> Result<(), String> {
+async fn validate_servers_config(
+    app: AppHandle,
+    st: State<'_, ManagedState>,
+) -> Result<(), String> {
     let xray = locate_xray(&app)?;
     let arc = state(&st);
     let (settings, server) = {
@@ -1767,8 +1816,13 @@ fn validate_servers_config(app: AppHandle, st: State<ManagedState>) -> Result<()
             .ok_or_else(|| "no active server selected".to_string())?;
         (g.settings.clone(), p)
     };
-    let cfg = config_gen::build_config(&settings, &server);
-    core::validate_config(&xray, &cfg, 0)
+    // spawning xray to validate a config is a blocking child-process call
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = config_gen::build_config(&settings, &server);
+        core::validate_config(&xray, &cfg, 0)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

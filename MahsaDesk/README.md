@@ -49,6 +49,11 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.13
+
+- **No more app freeze** - disconnecting, switching modes (TUN/Psiphon) and the delay/real tests no longer make the window "not responding": those long backend operations (the connect egress probe can wait up to 90 s) now run on a worker thread instead of the UI thread
+- **Connection tab removed** - it was an empty page; all connect modes stay on the buttons in the sidebar, and the connection doctor (previously only reachable from that tab) is gone with it
+
 ### New in v0.3.12
 
 - **Download fill bar** - core upgrades, geo files and wintun now stream with live progress (a fill bar appears at the bottom of the window; the app's own update download already showed a percentage on its button)
