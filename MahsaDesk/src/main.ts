@@ -1,6 +1,7 @@
 import "./style.css";
-import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo, type ShareInfo } from "./api";
+import { api, readQrFromClipboard, type ServerProfile, type Subscription, type Settings, type DnsResult, type IpResult, type ReqInfo, type AppUpdateInfo, type ShareInfo, type UsageSnapshot } from "./api";
 import { t, setLang, getLang, isRTL, type Lang } from "./i18n";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -52,6 +53,20 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+/** One compact line: this session and this month (both directions summed). */
+function applyUsage() {
+  if (!usageEl) return;
+  if (!usageSnap) {
+    usageEl.textContent = "";
+    usageEl.title = "";
+    return;
+  }
+  const sess = usageSnap.session_up + usageSnap.session_down;
+  const mon = usageSnap.month_up + usageSnap.month_down;
+  usageEl.textContent = `${t("usage.session")}: ${fmtBytes(sess)} · ${t("usage.month")}: ${fmtBytes(mon)}`;
+  usageEl.title = `${t("usage.session")}: ${fmtBytes(usageSnap.session_up)} ↑ / ${fmtBytes(usageSnap.session_down)} ↓   ·   ${t("usage.month")}: ${fmtBytes(usageSnap.month_up)} ↑ / ${fmtBytes(usageSnap.month_down)} ↓`;
+}
+
 let settings: Settings | null = null;
 let servers: ServerProfile[] = [];
 let subs: Subscription[] = [];
@@ -101,6 +116,7 @@ let mainEl: HTMLElement;
 let statusDot: HTMLElement;
 let statusText: HTMLElement;
 let trafficEl: HTMLElement;
+let usageEl: HTMLElement | null = null;
 let currentView = "servers";
 
 const NAV = [
@@ -156,7 +172,9 @@ function buildLayout() {
   btnStop.style.display = "none";
   btnStop.onclick = () => doDisconnect();
   trafficEl = el("div", "traffic", "");
-  connectCard.append(row, trafficEl, btnRow, btnStop);
+  usageEl = el("div", "traffic usage-line", "");
+  applyUsage();
+  connectCard.append(row, trafficEl, usageEl, btnRow, btnStop);
   sidebar.append(connectCard);
 
   mainEl = el("main", "main");
@@ -2454,6 +2472,8 @@ function renderSettings() {
 
 let trafficUp = 0;
 let trafficDown = 0;
+// #33: session/monthly byte counters, pushed by the backend while traffic flows
+let usageSnap: UsageSnapshot | null = null;
 
 // ---------------------------------------------------------------------------
 // logs view state (#23: level filter, search, copy/export, crash history)
@@ -2840,6 +2860,11 @@ function listenTraffic() {
         if (els[1]) els[1].textContent = fmtBytes(up);
       }
     });
+    // #33: backend session/month counters changed while traffic flows
+    listen("usage", (e: any) => {
+      usageSnap = e.payload as UsageSnapshot;
+      applyUsage();
+    });
     listen("core-log", (e: any) => {
       const box = document.getElementById("logbox");
       if (box) {
@@ -2870,6 +2895,56 @@ function listenTraffic() {
 }
 
 // ---------------------------------------------------------------------------
+// clipboard shortcuts (#14-style config copy/paste)
+//
+// In the Servers view: Ctrl+C copies the selected servers as share links (one
+// per line, exactly what the "Copy links" button produces) and Ctrl+V pastes
+// share links - or a single subscription URL, which the backend resolves.
+// Text inputs keep the native copy/paste: the check bails out there.
+// ---------------------------------------------------------------------------
+
+function registerShortcuts() {
+  window.addEventListener("keydown", async (ev: KeyboardEvent) => {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.shiftKey || ev.altKey) return;
+    const a = document.activeElement as HTMLElement | null;
+    if (
+      a &&
+      (a.tagName === "INPUT" ||
+        a.tagName === "TEXTAREA" ||
+        a.tagName === "SELECT" ||
+        a.isContentEditable)
+    ) {
+      return;
+    }
+    if (currentView !== "servers") return;
+    if ((ev.key || "").toLowerCase() === "c") {
+      const ids = [...srvSelected];
+      if (ids.length === 0) return;
+      ev.preventDefault();
+      try {
+        const links = await api.exportLinks(ids);
+        await writeText(links.join("\n"));
+        toast(t("servers.copied"));
+      } catch (e: any) {
+        toast(`${t("error")}: ${e}`);
+      }
+    } else if ((ev.key || "").toLowerCase() === "v") {
+      ev.preventDefault();
+      try {
+        const text = (await readText()).trim();
+        if (!text) return;
+        const n = await api.importLinks(text, "");
+        toast(t("servers.imported").replace("{n}", String(n)));
+        await refreshData();
+        renderView();
+      } catch (e: any) {
+        toast(`${t("error")}: ${e}`);
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
 
@@ -2895,6 +2970,15 @@ async function init() {
   renderView();
   updateStatus();
   listenTraffic();
+  registerShortcuts();
+  // #33: counters may already exist from a previous run (month rollup loads
+  // synchronously in the backend); the live `usage` event updates the rest
+  api.usageStats()
+    .then((s) => {
+      usageSnap = s;
+      applyUsage();
+    })
+    .catch(() => {});
   api.onDownloadProgress((key, done, total) => {
     showDlProgress(key, done, total);
     if (total && done >= total) finishDlProgress();

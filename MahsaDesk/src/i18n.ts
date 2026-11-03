@@ -28,6 +28,10 @@ export const DICT = {
       connPsiphon: "Psiphon",
       psiphonAfter: "Psiphon after",
     },
+    usage: {
+      session: "This session",
+      month: "This month",
+    },
     servers: {
       title: "Servers",
       add: "Add server",
@@ -434,6 +438,10 @@ export const DICT = {
       connTun: "TUN",
       connPsiphon: "سایفون",
       psiphonAfter: "سایفون بعد از کانفیگ",
+    },
+    usage: {
+      session: "این نشست",
+      month: "این ماه",
     },
     servers: {
       title: "سرورها",

@@ -14,6 +14,7 @@ use crate::config_gen;
 use crate::proc;
 use crate::settings::Settings;
 use crate::servers::ServerProfile;
+use crate::usage::Usage;
 
 pub const LOG_CAP: usize = 800;
 pub const STATS_API_PORT: u16 = 10130;
@@ -66,6 +67,7 @@ pub fn start_core(
     cfg: &Value,
     logs: &Arc<Mutex<VecDeque<String>>>,
     area: &AppHandle,
+    usage: std::sync::Arc<Usage>,
 ) -> Result<CoreHandle, String> {
     let cfg_path = workdir.join("xray-config.json");
     let json_text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
@@ -110,6 +112,7 @@ pub fn start_core(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let flag = stop_flag.clone();
     let area2 = area.clone();
+    let workdir_s = workdir.clone();
     let stats_thread = std::thread::spawn(move || {
         let mut last: Option<(u64, u64)> = None;
         let mut idle_rounds = 0u32;
@@ -131,6 +134,11 @@ pub fn start_core(
                         last = Some((up, down));
                         idle_rounds = 0;
                         let _ = area2.emit("traffic", json!({"up": up, "down": down}));
+                        // #33: fold the cumulative totals into session/month
+                        // accounting and push a fresh snapshot to the UI
+                        if let Some(snap) = usage.record(up, down, &workdir_s) {
+                            let _ = area2.emit("usage", snap);
+                        }
                     }
                 }
                 Err(_) => {
@@ -312,9 +320,10 @@ pub fn generate_and_start(
     server: &ServerProfile,
     logs: &Arc<Mutex<VecDeque<String>>>,
     area: &AppHandle,
+    usage: std::sync::Arc<Usage>,
 ) -> Result<CoreHandle, String> {
     let cfg = config_gen::build_config(settings, server);
-    start_core(xray_path, workdir, &cfg, logs, area)
+    start_core(xray_path, workdir, &cfg, logs, area, usage)
 }
 
 // ---------------------------------------------------------------------------

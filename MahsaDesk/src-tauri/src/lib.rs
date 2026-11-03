@@ -15,6 +15,7 @@ pub mod subs;
 pub mod sysproxy;
 pub mod tools;
 pub mod tun;
+pub mod usage;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -22,12 +23,13 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, Wry};
 
 use servers::ServerProfile;
 use settings::Settings;
@@ -133,6 +135,8 @@ struct AppState {
     gate: Option<gate::GateHandle>,
     /// Local subscription-share endpoint (#16); independent of connection state
     share: Option<share::ShareHandle>,
+    /// Session + monthly traffic accounting (#33)
+    usage: Arc<usage::Usage>,
     logs: Arc<Mutex<VecDeque<String>>>,
 }
 
@@ -170,6 +174,11 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
     let arc = state(&app.state::<ManagedState>());
     let mut st = arc.lock().unwrap();
 
+    // #33: the session is over - flush the monthly counters to disk so an app
+    // kill right here cannot lose traffic that already flowed.
+    let dir = data_dir(app)?;
+    let _ = st.usage.persist(&dir);
+
     let had_psiphon = st.psiphon_child.is_some();
     if let Some(gate) = st.gate.take() {
         gate.shutdown();
@@ -206,6 +215,10 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
         cmd.args(["/IM", psiphon::EXE_NAME, "/F"]);
         let _ = proc::output(cmd);
     }
+    // push the final tally (session bytes survive until the next connect)
+    let snap = st.usage.snapshot();
+    drop(st);
+    let _ = app.emit("usage", snap);
     Ok(())
 }
 
@@ -217,6 +230,16 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
         let g = arc.lock().unwrap();
         (g.settings.clone(), g.servers.clone(), g.logs.clone())
     };
+
+    // #33: a new connection starts the session tally from zero; the UI and
+    // the already-persisted month rollup keep what they have.
+    let snap = {
+        let arc = state(&app.state::<ManagedState>());
+        let g = arc.lock().unwrap();
+        g.usage.reset_session();
+        g.usage.snapshot()
+    };
+    let _ = app.emit("usage", snap);
 
     // ---- Psiphon only: the tunnel-core engine runs alone, no xray core ----
     if mode == Mode::PsiphonOnly {
@@ -405,6 +428,11 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
         if !xray_path.exists() {
             return Err("xray core binary not found in app binaries folder".into());
         }
+        let usage = {
+            let arc = state(&app.state::<ManagedState>());
+            let g = arc.lock().unwrap();
+            g.usage.clone()
+        };
         handle = Some(core::generate_and_start(
             dir.clone(),
             xray_path,
@@ -412,6 +440,7 @@ fn connect_mode(app: &AppHandle, mode: Mode) -> Result<(), String> {
             &server,
             &logs,
             app,
+            usage,
         )?);
     }
 
@@ -1517,6 +1546,13 @@ fn status(st: State<ManagedState>) -> StatusInfo {
     }
 }
 
+/// Session + monthly traffic counters (#33). The `usage` event carries the
+/// same shape while traffic flows.
+#[tauri::command]
+fn usage_stats(st: State<ManagedState>) -> usage::UsageSnapshot {
+    state(&st).lock().unwrap().usage.snapshot()
+}
+
 #[tauri::command]
 fn get_logs(st: State<ManagedState>) -> Vec<String> {
     let arc = state(&st);
@@ -2156,31 +2192,137 @@ fn chrono_secs() -> u128 {
 // Tray
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tray (#29)
+//
+// Left click (or "open") shows the app; right click opens the menu: a live
+// status line, connect/disconnect, a submenu to connect through a specific
+// mode, and quit. Everything but the status-line item is updated by
+// `update_tray`, driven by a short poll plus calls after tray-issued actions,
+// so the tray stays truthful even when a change came from the UI or the crash
+// monitor. The menu is built once, in the configured settings language: it is
+// backend-side, outside the webview i18n.
+// ---------------------------------------------------------------------------
+
+struct TrayItems {
+    status: MenuItem<Wry>,
+    toggle: MenuItem<Wry>,
+    m_system: CheckMenuItem<Wry>,
+    m_tun: CheckMenuItem<Wry>,
+    m_ponly: CheckMenuItem<Wry>,
+    m_pafter: CheckMenuItem<Wry>,
+}
+
+static TRAY_ITEMS: OnceLock<TrayItems> = OnceLock::new();
+
 fn build_tray(app: &AppHandle) -> Result<(), tauri::Error> {
-    let toggle = MenuItem::with_id(app, "toggle", "Connect / Disconnect", true, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open MahsaDesk", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let fa = {
+        let arc = state(&app.state::<ManagedState>());
+        let g = arc.lock().unwrap();
+        g.settings.language == "fa"
+    };
+    let l = |en: &str, fa_s: &str| if fa { fa_s.to_string() } else { en.to_string() };
+
+    let status = MenuItem::with_id(
+        app,
+        "tray-status",
+        l("MahsaDesk - disconnected", "MahsaDesk - قطع"),
+        // passive status line, not clickable
+        false,
+        None::<&str>,
+    )?;
+    let toggle = MenuItem::with_id(app, "toggle", l("Connect", "اتصال"), true, None::<&str>)?;
+    let m_system = CheckMenuItem::with_id(
+        app,
+        "m-system",
+        l("System proxy", "پروکسی سیستم"),
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let m_tun = CheckMenuItem::with_id(app, "m-tun", "TUN", true, false, None::<&str>)?;
+    let m_ponly = CheckMenuItem::with_id(
+        app,
+        "m-ponly",
+        l("Psiphon only", "فقط سایفون"),
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let m_pafter = CheckMenuItem::with_id(
+        app,
+        "m-pafter",
+        l("Psiphon after config", "سایفون بعد از کانفیگ"),
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let open = MenuItem::with_id(app, "open", l("Open window", "بازکردن پنجره"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", l("Quit", "خروج"), true, None::<&str>)?;
+    let modes = Submenu::with_items(
+        app,
+        l("Connect mode", "حالت اتصال"),
+        true,
+        &[&m_system, &m_tun, &m_ponly, &m_pafter],
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &sep1, &toggle, &sep2, &quit])?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[&status, &sep1, &toggle, &modes, &sep2, &open, &sep3, &quit],
+    )?;
+
+    // the handles update_tray needs to refresh texts and check marks later
+    let _ = TRAY_ITEMS.set(TrayItems {
+        status: status.clone(),
+        toggle: toggle.clone(),
+        m_system: m_system.clone(),
+        m_tun: m_tun.clone(),
+        m_ponly: m_ponly.clone(),
+        m_pafter: m_pafter.clone(),
+    });
 
     let icon = tauri::include_image!("icons/32x32.png");
-    let _tray = TrayIconBuilder::with_id("main-tray")
+    TrayIconBuilder::with_id("main-tray")
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "toggle" => {
-                let running = {
-                    let st = state(&app.state::<ManagedState>());
-                    let g = st.lock().unwrap();
-                    g.mode.is_some() || g.core_handle.is_some()
-                };
-                if running {
-                    let _ = disconnect(app);
-                } else {
-                    let _ = connect_mode(app, Mode::SystemProxy);
-                }
+            "toggle" | "m-system" | "m-tun" | "m-ponly" | "m-pafter" => {
+                let id = event.id().as_ref().to_string();
+                let app = app.clone();
+                // connects block for up to ~90 s (the egress probe); they must
+                // never run on the tray event thread
+                tauri::async_runtime::spawn_blocking(move || {
+                    let logging = state(&app.state::<ManagedState>()).lock().unwrap().logs.clone();
+                    let res = if id == "toggle" {
+                        let running = {
+                            let st = state(&app.state::<ManagedState>());
+                            let g = st.lock().unwrap();
+                            g.mode.is_some() || g.core_handle.is_some()
+                        };
+                        if running {
+                            disconnect(&app)
+                        } else {
+                            connect_mode(&app, Mode::SystemProxy)
+                        }
+                    } else {
+                        let mode = match id.as_str() {
+                            "m-tun" => Mode::Tun,
+                            "m-ponly" => Mode::PsiphonOnly,
+                            "m-pafter" => Mode::PsiphonAfter,
+                            _ => Mode::SystemProxy,
+                        };
+                        connect_mode(&app, mode)
+                    };
+                    // a failed tray connect has no dialog to show; the log page
+                    // carries the reason, like every other backend hiccup
+                    if let Err(e) = res {
+                        core::push_log(&logging, &app, format!("[tray] {} failed: {}", id, e));
+                    }
+                    update_tray(&app);
+                });
             }
             "open" => {
                 if let Some(win) = app.get_webview_window("main") {
@@ -2210,7 +2352,59 @@ fn build_tray(app: &AppHandle) -> Result<(), tauri::Error> {
             }
         })
         .build(app)?;
+    update_tray(app);
     Ok(())
+}
+
+/// Refresh the status line, toggle text, mode check marks and tooltip from the
+/// live connection state. Called on a short poll (setup) and right after any
+/// tray-issued connect/disconnect.
+fn update_tray(app: &AppHandle) {
+    let Some(items) = TRAY_ITEMS.get() else { return };
+    let (running, mode, fa) = {
+        let arc = state(&app.state::<ManagedState>());
+        let g = arc.lock().unwrap();
+        (
+            g.mode.is_some() || g.core_handle.is_some(),
+            g.mode.as_ref().map(|m| match m {
+                Mode::SystemProxy => "system",
+                Mode::Tun => "tun",
+                Mode::PsiphonOnly => "psiphon-only",
+                Mode::PsiphonAfter => "psiphon-after",
+            }),
+            g.settings.language == "fa",
+        )
+    };
+    let l = |en: &str, fa_s: &str| if fa { fa_s.to_string() } else { en.to_string() };
+    let (ok, off) = if fa { ("متصل", "قطع") } else { ("Connected", "Disconnected") };
+    let mode_label = match mode {
+        Some("tun") => "TUN".to_string(),
+        Some("psiphon-only") => l("Psiphon only", "فقط سایفون"),
+        Some("psiphon-after") => l("Psiphon after config", "سایفون بعد از کانفیگ"),
+        Some(_) => l("System proxy", "پروکسی سیستم"),
+        None => String::new(),
+    };
+    let status_text = if running {
+        format!("{} - {}", mode_label, ok)
+    } else {
+        off.to_string()
+    };
+    let _ = items.status.set_text(status_text.clone());
+    let _ = items
+        .toggle
+        .set_text(if running { l("Disconnect", "قطع") } else { l("Connect", "اتصال") });
+    let _ = items.m_system.set_checked(mode == Some("system"));
+    let _ = items.m_tun.set_checked(mode == Some("tun"));
+    let _ = items.m_ponly.set_checked(mode == Some("psiphon-only"));
+    let _ = items.m_pafter.set_checked(mode == Some("psiphon-after"));
+    let tooltip = if running {
+        format!("MahsaDesk - {}", status_text)
+    } else {
+        "MahsaDesk".to_string()
+    };
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2240,6 +2434,7 @@ pub fn run() {
             let settings = Settings::load(&dir);
             let servers = load_servers(&dir);
             let subs = subs::load_subs(&dir);
+            let usage = usage::Usage::load(&dir);
 
             app.manage(ManagedState(Arc::new(Mutex::new(AppState {
                 settings,
@@ -2251,6 +2446,7 @@ pub fn run() {
                 hy2_child: None,
                 gate: None,
                 share: None,
+                usage,
                 logs: logs.clone(),
             }))));
 
@@ -2262,6 +2458,14 @@ pub fn run() {
             }
 
             build_tray(&app.handle()).map_err(|e| e.to_string())?;
+
+            // keep the tray status/toggle truthful even for changes that never
+            // go through the tray itself (core crash, UI stop button, timers)
+            let tray_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(3));
+                update_tray(&tray_handle);
+            });
 
             // clean up engines orphaned by a previous run (once, hidden)
             for image in ["sing-box.exe", psiphon::EXE_NAME] {
@@ -2328,6 +2532,7 @@ pub fn run() {
             connect,
             disconnect_cmd,
             status,
+            usage_stats,
             get_logs,
             clear_logs,
             export_config,

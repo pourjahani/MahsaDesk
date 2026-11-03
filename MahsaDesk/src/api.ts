@@ -97,6 +97,16 @@ export interface ShareInfo {
   scope: string[] | null;
 }
 
+/** Session + monthly traffic accounting (#33). */
+export interface UsageSnapshot {
+  session_up: number;
+  session_down: number;
+  /** Calendar month the month counters belong to, "YYYY-MM". */
+  month: string;
+  month_up: number;
+  month_down: number;
+}
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (s: Settings) => invoke<void>("set_settings", { newSettings: s }),
@@ -134,6 +144,7 @@ export const api = {
   disconnect: () => invoke<void>("disconnect_cmd"),
   status: () =>
     invoke<{ running: boolean; mode: string | null; hy2_running?: boolean }>("status"),
+  usageStats: () => invoke<UsageSnapshot>("usage_stats"),
   getLogs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   exportConfig: () => invoke<string>("export_config"),

@@ -162,6 +162,14 @@ html[dir="rtl"] body {
   min-height: 16px;
 }
 
+/* #33: session/month tally under the live traffic line */
+.usage-line {
+  min-height: 0;
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: -2px;
+}
+
 /* --- update banner --- */
 .update-banner {
   border-color: #01ca7a;

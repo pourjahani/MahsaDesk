@@ -49,6 +49,12 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.14
+
+- **Tray icon now really controls the connection** - the tray menu shows a live status line ("System proxy - Connected"), Connect/Disconnect, a **Connect mode** submenu with all four modes (system proxy, TUN, Psiphon only, Psiphon after config — with check marks on the active one), and quit; it follows the app language (EN/FA) and stays truthful even when a change comes from the UI or a crash
+- **Data usage counters** - the sidebar shows *this session* and *this month* totals (setup + download summed; hover for the split). Counters are counted in the backend, so they keep working while the window is hidden in the tray, and the monthly rollup survives restarts (the session resets on each connect). Sessions without a local xray core (psiphon-only, and hysteria2 seats bypassing xray) have no per-byte source and don't move the counters
+- **Ctrl+C / Ctrl+V for configs** - on the Servers page, Ctrl+C copies the selected servers as share links (one per line, same as the Copy-links button) and Ctrl+V pastes share links or a subscription URL from the clipboard; text fields keep the normal clipboard behavior
+
 ### New in v0.3.13
 
 - **No more app freeze** - disconnecting, switching modes (TUN/Psiphon) and the delay/real tests no longer make the window "not responding": those long backend operations (the connect egress probe can wait up to 90 s) now run on a worker thread instead of the UI thread
