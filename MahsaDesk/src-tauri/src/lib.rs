@@ -172,12 +172,24 @@ fn save_servers(dir: &PathBuf, servers: &[ServerProfile]) -> Result<(), String> 
 
 fn disconnect(app: &AppHandle) -> Result<(), String> {
     let arc = state(&app.state::<ManagedState>());
-    let mut st = arc.lock().unwrap();
+    // A poisoned lock (a panicking background thread that held it) must not
+    // prevent the most important part of this call - restoring the user's
+    // normal connection. Recover the data, still run the teardown.
+    let mut st = arc.lock().unwrap_or_else(|p| p.into_inner());
+
+    // FIRST, before anything that can block or fail: restore the user's
+    // normal connection. Engine teardown below can hang (a killed child can
+    // stall in wait()); the Windows system proxy must be gone no matter what.
+    let prev_mode = st.mode.take();
+    if prev_mode.is_some() {
+        let _ = sysproxy::disable_system_proxy();
+    }
 
     // #33: the session is over - flush the monthly counters to disk so an app
     // kill right here cannot lose traffic that already flowed.
-    let dir = data_dir(app)?;
-    let _ = st.usage.persist(&dir);
+    if let Ok(dir) = data_dir(app) {
+        let _ = st.usage.persist(&dir);
+    }
 
     let had_psiphon = st.psiphon_child.is_some();
     if let Some(gate) = st.gate.take() {
@@ -190,10 +202,6 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
     if let Some(mut child) = st.hy2_child.take() {
         let _ = child.kill();
         let _ = child.wait();
-    }
-    let prev_mode = st.mode.take();
-    if prev_mode.is_some() {
-        let _ = sysproxy::disable_system_proxy();
     }
     if let Some(handle) = st.core_handle.take() {
         handle.shutdown();
@@ -2611,6 +2619,19 @@ pub fn run() {
                 let _ = proc::output(cmd);
             }
 
+            // self-heal: a previous run that never reached its teardown (killed
+            // process, crash, a hang inside disconnect) leaves the Windows
+            // system proxy pointed at our loopback inbound, which silently
+            // blackholes normal traffic after the app is gone. Clear it only
+            // when it points at one of OUR ports; other software's proxy stays.
+            {
+                let st = app.state::<ManagedState>();
+                let g = st.0.lock().unwrap_or_else(|p| p.into_inner());
+                if sysproxy::clear_own_leftover(g.settings.http_port, g.settings.psiphon_http_port) {
+                    core::push_log(&logs, app.handle(), "[startup] cleared a leftover system proxy from the previous run".into());
+                }
+            }
+
             // auto connect if configured
             let auto = {
                 let st = app.state::<ManagedState>();
@@ -2699,8 +2720,24 @@ pub fn run() {
             app_update_download,
             app_update_install
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("failed to build tauri application")
+        .run(|app, event| {
+            // Last-line defense for the system proxy (#29 follow-up): whatever
+            // way the process leaves (window close, tray quit, exit command,
+            // panic), if a proxy pointing at our own loopback inbound survives
+            // it silently blackholes the user's normal traffic after we are
+            // gone. `disconnect` already removes it in the orderly paths; this
+            // only clears a leftover that points at one of OUR ports.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                let (http_p, ph_p) = {
+                    let st = app.state::<ManagedState>();
+                    let g = st.0.lock().unwrap_or_else(|p| p.into_inner());
+                    (g.settings.http_port, g.settings.psiphon_http_port)
+                };
+                sysproxy::clear_own_leftover(http_p, ph_p);
+            }
+        });
 }
 
 #[cfg(test)]
