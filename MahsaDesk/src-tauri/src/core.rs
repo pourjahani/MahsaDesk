@@ -242,10 +242,15 @@ fn query_stats() -> Result<(u64, u64), String> {
     if let Some(stats) = v.pointer("/stat").and_then(|s| s.as_array()) {
         for s in stats {
             let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            // proto3-json encodes int64 as a quoted string; some builds emit
+            // a bare number, so accept both
             let val: u64 = s
                 .get("value")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|t| t.parse::<u64>().ok())
+                        .or_else(|| v.as_u64())
+                })
                 .unwrap_or(0);
             if name.contains(">>>uplink") {
                 up += val;

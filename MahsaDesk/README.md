@@ -49,6 +49,12 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.15
+
+- **Fixes the data-usage counters of v0.3.14 (always 0)** - the generated xray routing rules never sent the internal API inbound to the API outbound, so every stats query was silently swallowed and neither the live traffic readout nor usage could see any bytes; a regression test now locks the rule into place
+- **The usage line is a details toggle** - click it and it expands inline into four cells: session **upload**, session **download**, and live **ping/jitter** of the currently open tunnel (measured through its own socks inbound every 5 s, so it works in every mode, psiphon-only included)
+- Stats values are parsed as string *or* number, covering both proto3-JSON encoder variants of the xray binary
+
 ### New in v0.3.14
 
 - **Tray icon now really controls the connection** - the tray menu shows a live status line ("System proxy - Connected"), Connect/Disconnect, a **Connect mode** submenu with all four modes (system proxy, TUN, Psiphon only, Psiphon after config — with check marks on the active one), and quit; it follows the app language (EN/FA) and stays truthful even when a change comes from the UI or a crash

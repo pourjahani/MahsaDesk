@@ -26,6 +26,14 @@ pub fn build_config(settings: &Settings, server: &ServerProfile) -> Value {
 
     let mut rules: Vec<Value> = Vec::new();
 
+    // 0. The dokodemo "api" inbound answers gRPC for StatsService; without
+    // this rule it is matched by (or falls through to) the destination rules
+    // below (loopback=direct / proxy), so stats queries never reach the API
+    // and every counter stays at zero - traffic and usage alike (#33).
+    rules.push(json!(
+        {"type": "field", "inboundTag": ["api"], "outboundTag": "api"}
+    ));
+
     // 1. custom user rules first
     let block: Vec<String> = to_kv_list(&settings.custom_block);
     if !block.is_empty() {
@@ -102,10 +110,10 @@ pub fn build_config(settings: &Settings, server: &ServerProfile) -> Value {
         "api": {
             "tag": "api",
             "services": ["HandlerService", "StatsService", "LoggerService"]
-        },
-        "policy": {
-            "levels": {
-                "0": {
+        },            "policy": {
+                "levels": {
+                    "0": {
+
                     "handshake": 4,
                     "connIdle": 300,
                     "uplinkOnly": 0,
@@ -323,4 +331,34 @@ fn split_csv(s: &str) -> Vec<String> {
 
 fn is_domain(s: &str) -> bool {
     s.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #33 regression: without the `inboundTag api -> outboundTag api` rule
+    /// first in the routing list, stats queries are swallowed by the
+    /// loopback/direction rules and every counter stays at zero.
+    #[test]
+    fn api_stats_rule_is_routed_and_first() {
+        let settings = Settings::default();
+        let cfg = build_config(&settings, &crate::servers::ServerProfile::empty());
+        let rules = cfg.pointer("/routing/rules").and_then(|r| r.as_array()).unwrap();
+        let first = &rules[0];
+        assert_eq!(
+            first.get("inboundTag").and_then(|t| t.as_array()),
+            Some(&vec![json!("api")])
+        );
+        assert_eq!(first.get("outboundTag").and_then(|t| t.as_str()), Some("api"));
+        // the API inbound and the stats policy must be generated as well
+        assert!(cfg.pointer("/stats").is_some());
+        let api_in = cfg
+            .pointer("/inbounds")
+            .and_then(|i| i.as_array())
+            .unwrap()
+            .iter()
+            .any(|i| i.get("tag").and_then(|t| t.as_str()) == Some("api"));
+        assert!(api_in);
+    }
 }

@@ -31,6 +31,10 @@ export const DICT = {
     usage: {
       session: "This session",
       month: "This month",
+      upload: "Upload",
+      download: "Download",
+      ping: "Ping",
+      jitter: "Jitter",
     },
     servers: {
       title: "Servers",
@@ -442,6 +446,10 @@ export const DICT = {
     usage: {
       session: "این نشست",
       month: "این ماه",
+      upload: "آپلود",
+      download: "دانلود",
+      ping: "پینگ",
+      jitter: "جیتر",
     },
     servers: {
       title: "سرورها",

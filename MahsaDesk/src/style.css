@@ -170,6 +170,42 @@ html[dir="rtl"] body {
   margin-top: -2px;
 }
 
+/* the tally line is a toggle for the inline detail panel */
+.usage-line {
+  cursor: pointer;
+  user-select: none;
+}
+.usage-line.expanded {
+  opacity: 1;
+  color: var(--text);
+}
+.usage-detail {
+  display: none;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 20px;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: rgba(127, 127, 127, 0.12);
+  border-radius: 8px;
+}
+.usage-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.usage-label {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.usage-value {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* --- update banner --- */
 .update-banner {
   border-color: #01ca7a;

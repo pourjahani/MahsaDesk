@@ -107,6 +107,13 @@ export interface UsageSnapshot {
   month_down: number;
 }
 
+/** Ping/jitter probe of the running tunnel (#33 usage detail). */
+export interface ConnProbe {
+  ping_ms: number;
+  jitter_ms: number;
+  samples: number;
+}
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (s: Settings) => invoke<void>("set_settings", { newSettings: s }),
@@ -145,6 +152,7 @@ export const api = {
   status: () =>
     invoke<{ running: boolean; mode: string | null; hy2_running?: boolean }>("status"),
   usageStats: () => invoke<UsageSnapshot>("usage_stats"),
+  connProbe: () => invoke<ConnProbe>("conn_probe"),
   getLogs: () => invoke<string[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   exportConfig: () => invoke<string>("export_config"),

@@ -63,8 +63,84 @@ function applyUsage() {
   }
   const sess = usageSnap.session_up + usageSnap.session_down;
   const mon = usageSnap.month_up + usageSnap.month_down;
-  usageEl.textContent = `${t("usage.session")}: ${fmtBytes(sess)} · ${t("usage.month")}: ${fmtBytes(mon)}`;
+  usageEl.textContent =
+    `${t("usage.session")}: ${fmtBytes(sess)} · ${t("usage.month")}: ${fmtBytes(mon)}` +
+    (usageDetailOpen ? " ▴" : " ▾");
   usageEl.title = `${t("usage.session")}: ${fmtBytes(usageSnap.session_up)} ↑ / ${fmtBytes(usageSnap.session_down)} ↓   ·   ${t("usage.month")}: ${fmtBytes(usageSnap.month_up)} ↑ / ${fmtBytes(usageSnap.month_down)} ↓`;
+}
+
+/**
+ * Clicking the usage line expands an inline panel (#33): upload/download of
+ * the session, plus live ping/jitter of the running tunnel (probed every 5 s,
+ * like the server URL test but on the open connection; no running core = —).
+ */
+let usageDetailOpen = false;
+let usageDetail: HTMLElement | null = null;
+let usageDetailTimer: ReturnType<typeof setInterval> | null = null;
+let usageCells: { up: HTMLElement; down: HTMLElement; ping: HTMLElement; jitter: HTMLElement } | null = null;
+
+function toggleUsageDetail() {
+  if (!usageEl) return;
+  usageDetailOpen = !usageDetailOpen;
+  usageEl.classList.toggle("expanded", usageDetailOpen);
+  if (!usageDetail) {
+    const det = el("div", "usage-detail");
+    const cell = (label: string) => {
+      const wrap = el("div", "usage-cell");
+      wrap.append(el("span", "usage-label", label), el("span", "usage-value", "—"));
+      return wrap;
+    };
+    usageCells = {
+      up: cell(`↑ ${t("usage.upload")}`),
+      down: cell(`↓ ${t("usage.download")}`),
+      ping: cell(t("usage.ping")),
+      jitter: cell(t("usage.jitter")),
+    };
+    det.append(usageCells.up, usageCells.down, usageCells.ping, usageCells.jitter);
+    usageEl.insertAdjacentElement("afterend", det);
+    usageDetail = det;
+  }
+  const detail = usageDetail;
+  detail!.style.display = usageDetailOpen ? "grid" : "none";
+  if (usageDetailOpen) {
+    refreshUsageDetail();
+    if (!usageDetailTimer) {
+      usageDetailTimer = setInterval(refreshUsageDetail, 5000);
+    }
+    if (!usageSnap) {
+      // counters not loaded yet (or mode cannot count bytes); keep labels live
+      api.usageStats().then((s) => { usageSnap = s; applyUsage(); }).catch(() => {});
+    }
+  } else if (usageDetailTimer) {
+    clearInterval(usageDetailTimer);
+    usageDetailTimer = null;
+  }
+}
+
+function refreshUsageDetail() {
+  if (!usageCells) return;
+  const grab = (c: HTMLElement) => c.querySelector(".usage-value") as HTMLElement;
+  const vUp = grab(usageCells.up);
+  const vDown = grab(usageCells.down);
+  const vPing = grab(usageCells.ping);
+  const vJitter = grab(usageCells.jitter);
+  if (usageSnap) {
+    vUp.textContent = fmtBytes(usageSnap.session_up);
+    vDown.textContent = fmtBytes(usageSnap.session_down);
+  }
+  vPing.textContent = "…";
+  vJitter.textContent = "…";
+  api.connProbe()
+    .then((p) => {
+      if (!usageDetailOpen || !usageCells) return;
+      grab(usageCells.ping).textContent = `${p.ping_ms.toFixed(0)} ms`;
+      grab(usageCells.jitter).textContent = `${p.jitter_ms.toFixed(1)} ms`;
+    })
+    .catch(() => {
+      if (!usageDetailOpen || !usageCells) return;
+      grab(usageCells.ping).textContent = "—";
+      grab(usageCells.jitter).textContent = "—";
+    });
 }
 
 let settings: Settings | null = null;
@@ -172,9 +248,12 @@ function buildLayout() {
   btnStop.style.display = "none";
   btnStop.onclick = () => doDisconnect();
   trafficEl = el("div", "traffic", "");
-  usageEl = el("div", "traffic usage-line", "");
+  const usageLine = el("div", "traffic usage-line", "");
+  usageEl = usageLine;
   applyUsage();
-  connectCard.append(row, trafficEl, usageEl, btnRow, btnStop);
+  // click the usage line: inline upload/download/ping/jitter detail (#33)
+  usageLine.onclick = () => toggleUsageDetail();
+  connectCard.append(row, trafficEl, usageLine, btnRow, btnStop);
   sidebar.append(connectCard);
 
   mainEl = el("main", "main");

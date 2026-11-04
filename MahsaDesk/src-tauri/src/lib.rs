@@ -1553,6 +1553,143 @@ fn usage_stats(st: State<ManagedState>) -> usage::UsageSnapshot {
     state(&st).lock().unwrap().usage.snapshot()
 }
 
+#[derive(serde::Serialize)]
+pub struct ConnProbe {
+    /// Mean full round trip (socks + HTTP generate_204) through the live
+    /// tunnel, in milliseconds.
+    pub ping_ms: f64,
+    /// Mean absolute difference between consecutive samples, ms.
+    pub jitter_ms: f64,
+    pub samples: u32,
+}
+
+/// Latency of the RUNNING connection, measured through its local socks
+/// inbound (the port `mode` actually serves: psiphon-only uses its own pair).
+/// Reads happen on the blocking pool; a dead or slow tunnel surfaces as Err.
+#[tauri::command]
+async fn conn_probe(app: AppHandle) -> Result<ConnProbe, String> {
+    let port = {
+        let arc = state(&app.state::<ManagedState>());
+        let g = arc.lock().unwrap();
+        let running =
+            g.mode.is_some() || g.core_handle.is_some() || g.psiphon_child.is_some() || g.hy2_child.is_some();
+        if !running {
+            return Err("tunnel is not running".into());
+        }
+        if matches!(g.mode.as_ref(), Some(Mode::PsiphonOnly)) {
+            g.settings.psiphon_socks_port
+        } else {
+            g.settings.socks_port
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut rtts: Vec<f64> = Vec::new();
+        for _ in 0..3 {
+            if let Ok(r) = probe_rtt(port) {
+                rtts.push(r);
+            }
+        }
+        if rtts.is_empty() {
+            return Err("tunnel did not answer the probe".into());
+        }
+        let ping = rtts.iter().sum::<f64>() / rtts.len() as f64;
+        let jitter = if rtts.len() > 1 {
+            rtts.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (rtts.len() - 1) as f64
+        } else {
+            0.0
+        };
+        Ok(ConnProbe {
+            ping_ms: (ping * 10.0).round() / 10.0,
+            jitter_ms: (jitter * 10.0).round() / 10.0,
+            samples: rtts.len() as u32,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One timed socks5 handshake + full HTTP round trip through the tunnel in
+/// (generate_204 endpoint, like the server URL test). Blocking; called from
+/// the blocking pool only.
+fn probe_rtt(socks_port: u16) -> Result<f64, String> {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::{Duration, Instant};
+
+    const HOST: &str = "www.gstatic.com";
+    let started = Instant::now();
+    let addr: SocketAddr = format!("127.0.0.1:{}", socks_port)
+        .parse()
+        .map_err(|e| format!("bad port: {}", e))?;
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        .map_err(|e| format!("socks port not listening: {}", e))?;
+    s.set_read_timeout(Some(Duration::from_secs(4))).ok();
+    s.set_write_timeout(Some(Duration::from_secs(4))).ok();
+
+    // minimal socks5: no auth, CONNECT to the probe endpoint by domain name
+    s.write_all(&[0x05, 0x01, 0x00]).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 4];
+    s.read_exact(&mut buf[..2]).map_err(|e| e.to_string())?;
+    if buf[1] != 0x00 {
+        return Err("socks5 auth rejected".into());
+    }
+    let mut req = vec![0x05, 0x01, 0x00, 0x03, HOST.len() as u8];
+    req.extend_from_slice(HOST.as_bytes());
+    req.extend_from_slice(&80u16.to_be_bytes());
+    s.write_all(&req).map_err(|e| e.to_string())?;
+    s.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    if buf[1] != 0x00 {
+        return Err(format!("socks5 connect failed (status {})", buf[1]));
+    }
+    // reply address length differs by type; discard the remainder
+    let extra: usize = match buf[3] {
+        0x01 => 6,
+        0x04 => 18,
+        0x03 => {
+            let mut l = [0u8; 1];
+            s.read_exact(&mut l).map_err(|e| e.to_string())?;
+            l[0] as usize + 2
+        }
+        _ => 0,
+    };
+    let mut junk = vec![0u8; extra];
+    s.read_exact(&mut junk).map_err(|e| e.to_string())?;
+
+    s.write_all(
+        format!(
+            "GET /generate_204 HTTP/1.1\r\nHost: {}\r\nUser-Agent: MahsaDesk-probe\r\nConnection: close\r\n\r\n",
+            HOST
+        )
+        .as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut head: Vec<u8> = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        s.read_exact(&mut b).map_err(|e| e.to_string())?;
+        head.push(b[0]);
+        if head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if head.len() > 8 * 1024 {
+            return Err("probe response too large".into());
+        }
+    }
+    let head = String::from_utf8_lossy(&head);
+    let status = head
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("");
+    if status == "200" || status == "204" {
+        Ok(started.elapsed().as_millis() as f64)
+    } else {
+        Err(format!("probe got HTTP {}", status))
+    }
+}
+
 #[tauri::command]
 fn get_logs(st: State<ManagedState>) -> Vec<String> {
     let arc = state(&st);
@@ -2533,6 +2670,7 @@ pub fn run() {
             disconnect_cmd,
             status,
             usage_stats,
+            conn_probe,
             get_logs,
             clear_logs,
             export_config,
