@@ -49,6 +49,10 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.17
+
+- **Imported subscription links now land in the Subscriptions page** - pasting a subscription URL (import dialog, QR scan, Ctrl+V, or the setup wizard) still fetches its servers, but the URL itself is now saved as a user-added subscription (named after its host), so it shows up in Subs, keeps its server group and can be refreshed or deleted like any other sub; importing the same URL again reuses the existing entry instead of creating a duplicate
+
 ### New in v0.3.16
 
 - **Fixes the system proxy staying on after disconnect/quit** - disconnect now restores the user's normal connection FIRST (before any engine teardown that can hang), a poisoned lock or a failing data dir no longer prevents the cleanup, and an exit hook clears any leftover proxy that still points at MahsaDesk's own loopback port when the process leaves in any way; a proxy set by other software is never touched

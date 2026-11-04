@@ -1117,6 +1117,21 @@ fn set_active(app: AppHandle, st: State<ManagedState>, id: String) -> Result<(),
     g.settings.save(&dir)
 }
 
+/// Display name for an imported subscription URL: its host, minus the noisy
+/// bits. "https://sub.example.com/api/v1?token=x" -> "sub.example.com".
+fn sub_name_from_url(url: &str) -> String {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    let host = host.trim_start_matches("www.");
+    if host.is_empty() {
+        "Subscription".to_string()
+    } else {
+        host.to_string()
+    }
+}
+
 #[tauri::command]
 async fn import_links(
     app: AppHandle,
@@ -1126,13 +1141,14 @@ async fn import_links(
 ) -> Result<usize, String> {
     let trimmed = text.trim().to_string();
     // a lone http(s) URL is a subscription link: fetch its payload first
-    let payload = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    let is_sub_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    let payload = if is_sub_url {
         if trimmed.split_whitespace().count() != 1 {
             return Err("invalid share link".into());
         }
         subs::fetch_payload(&trimmed).await?
     } else {
-        trimmed
+        trimmed.clone()
     };
     let dir = data_dir(&app)?;
     let profiles = servers::parse_payload(&payload);
@@ -1142,7 +1158,34 @@ async fn import_links(
     }
     let arc = state(&st);
     let mut g = arc.lock().unwrap();
-    let subid = sub_id.unwrap_or_default();
+    let mut subid = sub_id.unwrap_or_default();
+    // An imported subscription URL must not vanish once its servers land: it
+    // joins the Subscriptions page as a user-added sub, so it can be
+    // refreshed or removed like any other. Re-importing the same URL reuses
+    // the existing entry instead of piling up duplicates.
+    if is_sub_url && subid.is_empty() {
+        subid = match g.subs.subs.iter().find(|s| s.url == trimmed) {
+            Some(existing) => existing.id.clone(),
+            None => {
+                let mut id = format!("sub-{}", chrono_secs());
+                let mut k = 2;
+                while g.subs.subs.iter().any(|s| s.id == id) {
+                    id = format!("sub-{}-{}", chrono_secs(), k);
+                    k += 1;
+                }
+                g.subs.subs.push(Subscription {
+                    id: id.clone(),
+                    name: sub_name_from_url(&trimmed),
+                    url: trimmed.clone(),
+                    enabled: true,
+                    update_interval_hours: 24,
+                    last_update: Some(chrono_secs() as u64),
+                });
+                let _ = subs::save_subs(&dir, &g.subs);
+                id
+            }
+        };
+    }
     for mut p in profiles {
         p.sub_id = subid.clone();
         if p.remark.is_empty() {
@@ -2742,8 +2785,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_portable_exe;
+    use super::{is_portable_exe, sub_name_from_url};
     use std::path::Path;
+
+    #[test]
+    fn subscription_name_comes_from_the_host() {
+        assert_eq!(sub_name_from_url("https://sub.example.com/api/v1?token=x"), "sub.example.com");
+        assert_eq!(sub_name_from_url("http://www.Example.com:8080/sub"), "Example.com");
+        assert_eq!(sub_name_from_url("https://user:pass@panel.example.com:2096/sub"), "panel.example.com");
+        assert_eq!(sub_name_from_url("https://"), "Subscription");
+    }
 
     #[test]
     fn portable_detection_keys_off_the_exe_name() {
