@@ -254,8 +254,50 @@ fn psiphon_config_builder_defaults_and_keys() {
         cfg.get("LocalHttpProxyPort").unwrap().as_u64().unwrap(),
         7502
     );
-    assert_eq!(cfg.get("PropagationChannelId").unwrap(), "FFFFFFFFFFFFFFFF");
-    assert_eq!(cfg.get("SponsorId").unwrap(), "FFFFFFFFFFFFFFFF");
+    assert_eq!(
+        cfg.get("PropagationChannelId").unwrap(),
+        psiphon::PROPAGATION_CHANNEL_ID
+    );
+    assert_eq!(cfg.get("SponsorId").unwrap(), psiphon::SPONSOR_ID);
+    // bootstrap: server list endpoints + keys so a fresh engine can download
+    // server entries (a stock console-client build embeds none and would sit
+    // forever on "entries 0")
+    assert!(cfg
+        .get("RemoteServerListURLs")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .len()
+        > 1);
+    assert!(cfg
+        .get("ObfuscatedServerListRootURLs")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .len()
+        > 1);
+    assert!(cfg.get("ServerEntrySignaturePublicKey").unwrap().is_string());
+    assert!(cfg
+        .get("RemoteServerListSignaturePublicKey")
+        .unwrap()
+        .is_string());
+    assert!(cfg.get("UseIndistinguishableTLS").unwrap().as_bool().unwrap());
+    // user base config keeps its own identity and endpoints (or_insert rules)
+    let dir = std::env::temp_dir().join("mahsadesk-test-psiphon");
+    let _ = std::fs::create_dir_all(&dir);
+    let base = dir.join("psiphon-user.base.json");
+    std::fs::write(
+        &base,
+        r#"{"SponsorId":"MY-SPONSOR","PropagationChannelId":"MY-PROP","RemoteServerListURLs":[{"OnlyAfterAttempts":0,"SkipVerify":false,"URL":"aHR0cHM6Ly9leGFtcGxlLmNvbS9zbA=="}]}"#,
+    )
+    .unwrap();
+    let cfg = psiphon::build_config(&s, None, Path::new("data"), &base);
+    assert_eq!(cfg.get("SponsorId").unwrap(), "MY-SPONSOR");
+    assert_eq!(cfg.get("PropagationChannelId").unwrap(), "MY-PROP");
+    assert_eq!(
+        cfg.get("RemoteServerListURLs").unwrap().as_array().unwrap().len(),
+        1
+    );
     assert!(cfg.get("EmitDiagnosticNotices").unwrap().as_bool().unwrap());
     assert!(cfg.get("UpstreamProxyURL").is_none(), "only mode: no upstream");
 

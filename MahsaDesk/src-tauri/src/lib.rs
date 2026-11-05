@@ -192,40 +192,52 @@ fn disconnect(app: &AppHandle) -> Result<(), String> {
     }
 
     let had_psiphon = st.psiphon_child.is_some();
-    if let Some(gate) = st.gate.take() {
+    // Take ownership of everything that can be slow to tear down, then drop
+    // the state lock BEFORE killing/waiting: a wedged engine child can stall
+    // in wait() for many seconds, and sync commands invoked by the UI during
+    // that window (the status poll runs every few seconds) run on the MAIN
+    // thread - holding the lock there froze the entire window ("not
+    // responding") while psiphon connect attempts churned.
+    let gate = st.gate.take();
+    let psiphon_child = st.psiphon_child.take();
+    let hy2_child = st.hy2_child.take();
+    let core_handle = st.core_handle.take();
+    let tun_mode = prev_mode == Some(Mode::Tun);
+    let kill_psiphon_engine = had_psiphon
+        || prev_mode == Some(Mode::PsiphonOnly)
+        || prev_mode == Some(Mode::PsiphonAfter);
+    let snap = st.usage.snapshot();
+    drop(st);
+
+    if let Some(gate) = gate {
         gate.shutdown();
     }
-    if let Some(mut child) = st.psiphon_child.take() {
+    if let Some(mut child) = psiphon_child {
         let _ = child.kill();
         let _ = child.wait();
     }
-    if let Some(mut child) = st.hy2_child.take() {
+    if let Some(mut child) = hy2_child {
         let _ = child.kill();
         let _ = child.wait();
     }
-    if let Some(handle) = st.core_handle.take() {
+    if let Some(handle) = core_handle {
         handle.shutdown();
     }
     // Targeted cleanup, only for engines this session actually ran (and always
     // without flashing a console window). Orphans from a previous run are
     // cleaned once at startup instead of on every disconnect.
-    if prev_mode == Some(Mode::Tun) {
+    if tun_mode {
         // the elevated sing-box is not our child, so it needs taskkill
         let mut cmd = Command::new("taskkill");
         cmd.args(["/IM", "sing-box.exe", "/F"]);
         let _ = proc::output(cmd);
     }
-    if had_psiphon
-        || prev_mode == Some(Mode::PsiphonOnly)
-        || prev_mode == Some(Mode::PsiphonAfter)
-    {
+    if kill_psiphon_engine {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/IM", psiphon::EXE_NAME, "/F"]);
         let _ = proc::output(cmd);
     }
     // push the final tally (session bytes survive until the next connect)
-    let snap = st.usage.snapshot();
-    drop(st);
     let _ = app.emit("usage", snap);
     Ok(())
 }
@@ -745,8 +757,8 @@ struct StatusInfo {
 }
 
 #[tauri::command]
-fn get_settings(st: State<ManagedState>) -> Settings {
-    state(&st).lock().unwrap().settings.clone()
+async fn get_settings(st: State<'_, ManagedState>) -> Result<Settings, String> {
+    Ok(state(&st).lock().unwrap().settings.clone())
 }
 
 #[tauri::command]
@@ -778,8 +790,8 @@ fn set_settings(
 }
 
 #[tauri::command]
-fn list_servers(st: State<ManagedState>) -> Vec<ServerProfile> {
-    state(&st).lock().unwrap().servers.clone()
+async fn list_servers(st: State<'_, ManagedState>) -> Result<Vec<ServerProfile>, String> {
+    Ok(state(&st).lock().unwrap().servers.clone())
 }
 
 #[tauri::command]
@@ -1285,8 +1297,8 @@ async fn update_subscription_impl(
 }
 
 #[tauri::command]
-fn list_subscriptions(st: State<ManagedState>) -> Vec<Subscription> {
-    state(&st).lock().unwrap().subs.subs.clone()
+async fn list_subscriptions(st: State<'_, ManagedState>) -> Result<Vec<Subscription>, String> {
+    Ok(state(&st).lock().unwrap().subs.subs.clone())
 }
 
 #[tauri::command]
@@ -1578,10 +1590,10 @@ async fn disconnect_cmd(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn status(st: State<ManagedState>) -> StatusInfo {
+async fn status(st: State<'_, ManagedState>) -> Result<StatusInfo, String> {
     let arc = state(&st);
     let g = arc.lock().unwrap();
-    StatusInfo {
+    Ok(StatusInfo {
         // mode is set on every successful connect (including the hy2 sidecar
         // and hy2 TUN paths where no xray CoreHandle exists)
         running: g.mode.is_some() || g.core_handle.is_some(),
@@ -1594,14 +1606,14 @@ fn status(st: State<ManagedState>) -> StatusInfo {
         active: Some(g.settings.active_server.clone()),
         psiphon_running: g.psiphon_child.is_some(),
         hy2_running: g.hy2_child.is_some(),
-    }
+    })
 }
 
 /// Session + monthly traffic counters (#33). The `usage` event carries the
 /// same shape while traffic flows.
 #[tauri::command]
-fn usage_stats(st: State<ManagedState>) -> usage::UsageSnapshot {
-    state(&st).lock().unwrap().usage.snapshot()
+async fn usage_stats(st: State<'_, ManagedState>) -> Result<usage::UsageSnapshot, String> {
+    Ok(state(&st).lock().unwrap().usage.snapshot())
 }
 
 #[derive(serde::Serialize)]
@@ -1742,7 +1754,7 @@ fn probe_rtt(socks_port: u16) -> Result<f64, String> {
 }
 
 #[tauri::command]
-fn get_logs(st: State<ManagedState>) -> Vec<String> {
+async fn get_logs(st: State<'_, ManagedState>) -> Result<Vec<String>, String> {
     let arc = state(&st);
     let g = arc.lock().unwrap();
     let q = g
@@ -1752,7 +1764,7 @@ fn get_logs(st: State<ManagedState>) -> Vec<String> {
         .iter()
         .cloned()
         .collect::<Vec<String>>();
-    q
+    Ok(q)
 }
 
 #[tauri::command]

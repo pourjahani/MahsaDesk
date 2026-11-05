@@ -49,6 +49,12 @@ The app is available as both an NSIS installer and a portable executable.
 - **Optional download proxy** - Settings -> Connection has a "Download proxy" field (for example `http://127.0.0.1:10808`) used only for downloads, for PCs that can reach the internet solely through a local proxy
 - **Built-in app updater** - the About view and the startup banner now check the release page, download the right asset for this build with a live percentage, verify the published SHA-256, install and restart. The installed build runs the setup silently; the portable build swaps the exe and `binaries/` in place while keeping its `data/` folder, so settings, servers and subscriptions survive the update. "Open release page" and "Later" are still there
 
+### New in v0.3.18
+
+- **Psiphon now actually connects** - the tunnel engine was booting with zero server candidates: placeholder sponsor/network ids, no remote server list endpoints and no signature keys meant it had no way to discover any servers, so every connect sat in the traffic probe and failed. The config now ships Psiphon's public server-list bootstrap (verified end-to-end: the tunnel established and answered real traffic); a user-supplied `psiphon-user.json` still overrides every value
+- **No more "not responding" during connect attempts** - the state lock is released before engine teardown, which can stall for seconds in `wait()` on a wedged child; the 4-second UI status poll used to block the main thread on that lock and freeze the whole window, especially in Psiphon-after mode where xray plus the engine are torn down together
+- Hot UI commands (`status`, usage, logs, settings, servers, subscriptions) run off the main thread, so UI polling can no longer freeze the window while connect/disconnect threads hold state briefly
+
 ### New in v0.3.17
 
 - **Imported subscription links now land in the Subscriptions page** - pasting a subscription URL (import dialog, QR scan, Ctrl+V, or the setup wizard) still fetches its servers, but the URL itself is now saved as a user-added subscription (named after its host), so it shows up in Subs, keeps its server group and can be refreshed or deleted like any other sub; importing the same URL again reuses the existing entry instead of creating a duplicate
