@@ -307,6 +307,40 @@ const dlKeyLabels: Record<string, string> = {
   "geosite.dat": "dl.geosite",
 };
 
+// requirement key -> download-progress event key (asset file names). The
+// bottom-bar label map above already covers every name here.
+const reqDlKeys: Record<string, string[]> = {
+  xray: ["xray.exe"],
+  singbox: ["sing-box.exe"],
+  psiphon: ["psiphon-tunnel-core.exe"],
+  geo: ["geoip.dat", "geosite.dat"],
+  wintun: ["wintun.dll"],
+};
+
+// Buttons that started a requirements download subscribe here: progress for
+// their file keys is painted as "Downloading... NN%" on the button itself and
+// the bottom bar is suppressed while subscribed. Auto-fixes like first-connect
+// engine fetches have no button, so they still use the bar.
+let dlButtonSubs: { btn: HTMLButtonElement; keys: string[]; base: string }[] = [];
+
+function trackDlButton(btn: HTMLButtonElement, keys: string[], base: string) {
+  dlButtonSubs.push({ btn, keys, base });
+}
+
+function untrackDlButton(btn: HTMLButtonElement) {
+  dlButtonSubs = dlButtonSubs.filter((s) => s.btn !== btn);
+}
+
+function applyDlButtonProgress(key: string, pct: number | null): boolean {
+  let matched = false;
+  for (const s of dlButtonSubs) {
+    if (!s.keys.includes(key) || !s.btn.isConnected) continue;
+    matched = true;
+    s.btn.textContent = pct == null ? s.base : `${s.base} ${pct}%`;
+  }
+  return matched;
+}
+
 function ensureDlBar(): { bar: HTMLElement; fill: HTMLElement; label: HTMLElement } {
   if (!dlBarEl || !dlFillEl || !dlLabelEl) {
     const bar = el("div", "dl-bar hidden");
@@ -328,6 +362,12 @@ function ensureDlBar(): { bar: HTMLElement; fill: HTMLElement; label: HTMLElemen
 }
 
 function showDlProgress(key: string, done: number | null, total: number | null) {
+  const pct =
+    total && total > 0 && done != null
+      ? Math.min(100, Math.round((done / total) * 100))
+      : null;
+  // a subscribed button shows its own progress instead of the bottom bar
+  if (applyDlButtonProgress(key, pct)) return;
   const { bar, fill, label } = ensureDlBar();
   if (dlHideTimer) {
     clearTimeout(dlHideTimer);
@@ -335,10 +375,6 @@ function showDlProgress(key: string, done: number | null, total: number | null) 
   }
   const labelKey = dlKeyLabels[key];
   label.textContent = labelKey ? t(labelKey) : key;
-  const pct =
-    total && total > 0 && done != null
-      ? Math.min(100, Math.round((done / total) * 100))
-      : null;
   if (pct == null) {
     fill.classList.add("indeterminate");
   } else {
@@ -1565,12 +1601,14 @@ function renderRouting() {
   btnGeo.onclick = async () => {
     btnGeo.disabled = true;
     btnGeo.textContent = "...";
+    trackDlButton(btnGeo, reqDlKeys.geo, t("routing.geoBusy"));
     try {
       await api.downloadGeo();
       finishDlProgress();
     } catch (e: any) {
       alert(`${t("error")}: ${e}`);
     }
+    untrackDlButton(btnGeo);
     renderView();
   };
   geoRow.append(geoStatus, btnGeo);
@@ -1649,6 +1687,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
         if (!(await confirmEngineUpdate())) return;
         btn.disabled = true;
         btn.textContent = t("requirements.updating");
+        trackDlButton(btn, reqDlKeys[it.key] ?? [], t("requirements.updating"));
         try {
           await api.requirementsUpgrade(it.key);
           finishDlProgress();
@@ -1658,6 +1697,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
           btn.disabled = false;
           btn.textContent = t("requirements.upgrade");
         }
+        untrackDlButton(btn);
       };
       right.append(btn);
       row.append(right);
@@ -1687,6 +1727,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
   allBtn.onclick = async () => {
     allBtn.disabled = true;
     allBtn.textContent = t("requirements.checking");
+    const allKeys = Object.values(reqDlKeys).flat();
     try {
       const items = await api.requirementsStatus(true);
       const todo = items.filter((i) => i.update_available || !i.exists);
@@ -1694,6 +1735,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
         alert(t("requirements.updated"));
       } else if (await confirmEngineUpdate()) {
         allBtn.textContent = t("requirements.updating");
+        trackDlButton(allBtn, allKeys, t("requirements.updating"));
         // one failing engine must not abort the rest of the batch
         const failed: string[] = [];
         for (const it of todo) {
@@ -1704,6 +1746,7 @@ async function renderRequirementsCard(wrap: HTMLElement) {
             failed.push(`${it.key}: ${e}`);
           }
         }
+        untrackDlButton(allBtn);
         if (failed.length > 0) {
           alert(`${t("error")}:\n${failed.join("\n")}`);
         }
